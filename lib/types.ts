@@ -14,7 +14,7 @@ import type { ComponentType } from "react";
 // out before this terminal renders anything. Omit visibility, or set it to
 // "public", for content any in-world lookup could plausibly show.
 
-export type EntityKind = "briefing" | "person" | "organization";
+export type EntityKind = "briefing" | "person" | "organization" | "district" | "location";
 export type Visibility = "public" | "private";
 
 export interface EntityColors {
@@ -42,6 +42,12 @@ export interface EntityQuote {
   cite: string;
 }
 
+/** A point on a map image, as a percentage of its width/height — resolution-independent. */
+export interface MapPoint {
+  x: number;
+  y: number;
+}
+
 export interface Entity {
   id: string;
   kind: EntityKind;
@@ -55,6 +61,16 @@ export interface Entity {
   stats: EntityStat[];
   sections: EntitySection[];
   quote: EntityQuote | null;
+
+  // ── Map fields (districts + locations only) ──────────────────────────────
+  /** Districts only: the detailed district map, when one exists. */
+  mapImageUrl?: string;
+  /** Districts only: where this district's pin sits on the city map. */
+  cityHotspot?: MapPoint;
+  /** Locations only: id of the parent district entity. */
+  district?: string;
+  /** Locations only: where this location's pin sits on its district's map. */
+  districtHotspot?: MapPoint;
 }
 
 export type ListingKind = "house" | "apartment";
