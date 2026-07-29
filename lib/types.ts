@@ -1,19 +1,60 @@
 import type { ComponentType } from "react";
 
-export interface NPC {
+// ── Shared entity schema ─────────────────────────────────────────────────
+//
+// This is the canonical shape for people, organizations, and (eventually)
+// locations across every Fate City app — this terminal, the wire app, and
+// whatever GM tooling comes next. It's stored once, in the shared Firebase
+// project's "entities" collection (see lib/firebase.ts), so a field edited
+// in one place shows up everywhere that reads it.
+//
+// Visibility is per-section / per-stat, not per-app: "private" means GM-only
+// material (hooks meant for the benefactor to feed a player out of fiction,
+// not something an in-world computer would ever surface) and is filtered
+// out before this terminal renders anything. Omit visibility, or set it to
+// "public", for content any in-world lookup could plausibly show.
+
+export type EntityKind = "briefing" | "person" | "organization";
+export type Visibility = "public" | "private";
+
+export interface EntityColors {
+  rule: string;
+  accent: string;
+  stripe: string;
+  stampColor: string;
+}
+
+export interface EntityStat {
+  label: string;
+  value: string;
+  visibility?: Visibility;
+}
+
+export interface EntitySection {
+  heading: string;
+  paragraphs?: string[];
+  hooks?: string[];
+  visibility?: Visibility;
+}
+
+export interface EntityQuote {
+  text: string;
+  cite: string;
+}
+
+export interface Entity {
   id: string;
+  kind: EntityKind;
+  fileNo: string;
+  stamp: string;
+  colors: EntityColors;
   name: string;
-  age: number;
-  gender: string;
-  occupation: string;
-  workplace: string;
-  /** Displayed as "UNKNOWN" until homeKnown is true. */
-  home: string;
-  homeKnown: boolean;
-  /** Short dossier blurb. */
-  summary: string;
-  /** Hue used to tint the generated portrait, keeps NPCs distinguishable. */
-  portraitSeed: number;
+  epithet: string;
+  /** Download URLs from Firebase Storage — first image is the profile shot. */
+  images: string[];
+  stats: EntityStat[];
+  sections: EntitySection[];
+  quote: EntityQuote | null;
 }
 
 export type ListingKind = "house" | "apartment";

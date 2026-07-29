@@ -4,13 +4,8 @@
 // can be swapped for Firestore / Realtime Database / Vercel KV later
 // without touching any app component. For now: static data + localStorage.
 
-import { NPCS } from "@/data/npcs";
 import { LISTINGS } from "@/data/listings";
-import type { Listing, NPC } from "@/lib/types";
-
-export async function fetchNPCs(): Promise<NPC[]> {
-  return NPCS;
-}
+import type { Listing } from "@/lib/types";
 
 export async function fetchListings(): Promise<Listing[]> {
   return LISTINGS;
