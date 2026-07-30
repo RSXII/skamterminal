@@ -63,13 +63,18 @@ export interface Entity {
   quote: EntityQuote | null;
 
   // ── Map fields (districts + locations only) ──────────────────────────────
-  /** Districts only: the detailed district map, when one exists. */
+  // The city map is one continuous vector canvas — every point below is a
+  // percentage of that same shared viewBox, not of a separate cropped image.
+  // Districts zoom the canvas in rather than swapping to a different map.
+  /** Districts only: legacy per-district map image, no longer used for rendering. */
   mapImageUrl?: string;
-  /** Districts only: where this district's pin sits on the city map. */
+  /** Districts only: rough boundary polygon, for the hover-glow outline and the zoom-to-fit target. */
+  boundary?: MapPoint[];
+  /** Districts only: fallback point (e.g. polygon centroid) for districts without a boundary yet. */
   cityHotspot?: MapPoint;
   /** Locations only: id of the parent district entity. */
   district?: string;
-  /** Locations only: where this location's pin sits on its district's map. */
+  /** Locations only: where this location's pin sits on the shared city canvas. */
   districtHotspot?: MapPoint;
 }
 
