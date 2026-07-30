@@ -3,11 +3,13 @@
 import { useCallback, useRef, useState } from "react";
 import { APPS, APP_LIST } from "@/lib/apps";
 import type { WindowState } from "@/lib/types";
+import type { Role } from "@/lib/auth";
+import { SessionProvider } from "@/lib/session";
 import { OSWindow } from "@/components/os/Window";
 import { Taskbar } from "@/components/os/Taskbar";
 import { SkamSigil } from "@/components/os/icons";
 
-export function Desktop({ user, onLogout }: { user: string; onLogout: () => void }) {
+export function Desktop({ user, role, onLogout }: { user: string; role: Role; onLogout: () => void }) {
   const [windows, setWindows] = useState<WindowState[]>([]);
   const [selectedIcon, setSelectedIcon] = useState<string | null>(null);
   const nextId = useRef(1);
@@ -95,6 +97,7 @@ export function Desktop({ user, onLogout }: { user: string; onLogout: () => void
   );
 
   return (
+    <SessionProvider value={{ user, role }}>
     <div className="absolute inset-0" onPointerDown={() => setSelectedIcon(null)}>
       {/* wallpaper */}
       <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
@@ -161,6 +164,7 @@ export function Desktop({ user, onLogout }: { user: string; onLogout: () => void
 
       <Taskbar
         user={user}
+        role={role}
         windows={windows}
         apps={APPS}
         focusedId={focusedId}
@@ -168,5 +172,6 @@ export function Desktop({ user, onLogout }: { user: string; onLogout: () => void
         onLogout={onLogout}
       />
     </div>
+    </SessionProvider>
   );
 }
