@@ -14,6 +14,7 @@ const CENTER = { x: VB.x + VB.w / 2, y: VB.y + VB.h / 2 };
 const LOCATION_ZOOM_BOOST = 2.3;
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 6;
+const PAN_THRESHOLD = 5; // px of pointer movement before a press-drag counts as panning, not a click
 const PIN_BASE_R = 46; // user units at scale 1 — divided by current scale to stay a constant screen size
 
 function abs(pct: MapPoint) {
@@ -56,7 +57,12 @@ export function MapApp() {
   const [editingBoundaryId, setEditingBoundaryId] = useState<string | null>(null);
   const [boundaryDraft, setBoundaryDraft] = useState<MapPoint[] | null>(null);
   const [savingBoundary, setSavingBoundary] = useState(false);
+  const [isDraggingMap, setIsDraggingMap] = useState(false);
   const draggingVertex = useRef<number | null>(null);
+  const panRef = useRef<{ startClientX: number; startClientY: number; startFocusX: number; startFocusY: number; moved: boolean } | null>(
+    null
+  );
+  const suppressNextClickRef = useRef(false);
 
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -204,16 +210,58 @@ export function MapApp() {
     draggingVertex.current = index;
   }
 
+  /** Starts a potential pan drag on background press — becomes a real pan only past PAN_THRESHOLD, so a plain click still reaches district/pin handlers. */
+  function handleMapPointerDown(e: ReactPointerEvent<SVGSVGElement>) {
+    if (e.button !== 0 || draggingVertex.current !== null) return;
+    suppressNextClickRef.current = false;
+    panRef.current = {
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      startFocusX: focus.point.x,
+      startFocusY: focus.point.y,
+      moved: false,
+    };
+  }
+
   function handleMapPointerMove(e: ReactPointerEvent<SVGSVGElement>) {
-    if (draggingVertex.current === null) return;
-    const pct = screenToPct(e.clientX, e.clientY);
-    if (!pct) return;
-    const idx = draggingVertex.current;
-    setBoundaryDraft((prev) => (prev ? prev.map((p, i) => (i === idx ? pct : p)) : prev));
+    if (draggingVertex.current !== null) {
+      const pct = screenToPct(e.clientX, e.clientY);
+      if (!pct) return;
+      const idx = draggingVertex.current;
+      setBoundaryDraft((prev) => (prev ? prev.map((p, i) => (i === idx ? pct : p)) : prev));
+      return;
+    }
+    if (!panRef.current) return;
+    const { startClientX, startClientY, startFocusX, startFocusY } = panRef.current;
+    const dx = e.clientX - startClientX;
+    const dy = e.clientY - startClientY;
+    if (!panRef.current.moved) {
+      if (Math.hypot(dx, dy) < PAN_THRESHOLD) return;
+      panRef.current.moved = true;
+      suppressNextClickRef.current = true;
+      setIsDraggingMap(true);
+      // Only capture once we know this is a real drag — capturing eagerly on every press would
+      // retarget the eventual "click" compat event to the svg instead of whatever's under the
+      // cursor, silently breaking district/pin onClick handlers for plain, non-dragging clicks.
+      safeCapture(e.currentTarget, e.pointerId);
+    }
+    const svg = svgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const frameScale = Math.min(rect.width / VB.w, rect.height / VB.h);
+    const worldDx = dx / (frameScale * totalScale);
+    const worldDy = dy / (frameScale * totalScale);
+    // Captured startFocusX/Y as locals above, not read from panRef.current inside this updater —
+    // React can invoke a setState updater after a later pointerup already cleared the ref, which
+    // was throwing "can't access property startFocusX, panRef.current is null" in production.
+    const nextPoint = { x: startFocusX - worldDx, y: startFocusY - worldDy };
+    setFocus((f) => ({ ...f, point: nextPoint }));
   }
 
   function handleMapPointerUp() {
     draggingVertex.current = null;
+    panRef.current = null;
+    setIsDraggingMap(false);
   }
 
   /** setPointerCapture throws if the browser has no active pointer with this id (e.g. synthetic events) — drag still works via the SVG-level move/up handlers either way. */
@@ -327,27 +375,37 @@ export function MapApp() {
                 <svg
                   ref={svgRef}
                   viewBox={`${VB.x} ${VB.y} ${VB.w} ${VB.h}`}
-                  className={`h-full w-full ${editMode ? "cursor-crosshair" : ""}`}
+                  className={`h-full w-full ${editMode ? "cursor-crosshair" : isDraggingMap ? "cursor-grabbing" : "cursor-grab"}`}
+                  style={{ touchAction: "none" }}
                   onClick={(e) => {
+                    if (suppressNextClickRef.current) {
+                      suppressNextClickRef.current = false;
+                      return;
+                    }
                     if (!editMode || !target || editingBoundaryId) return;
                     const pct = screenToPct(e.clientX, e.clientY);
                     if (!pct) return;
                     setPlaced((prev) => ({ ...prev, [target]: pct }));
                     setTarget("");
                   }}
+                  onPointerDown={handleMapPointerDown}
                   onPointerMove={handleMapPointerMove}
                   onPointerUp={handleMapPointerUp}
                   onPointerLeave={handleMapPointerUp}
                 >
-                  <g style={{ transform, transition: "transform 0.6s cubic-bezier(0.2,0.7,0.3,1)" }}>
+                  <g style={{ transform, transition: isDraggingMap ? "none" : "transform 0.6s cubic-bezier(0.2,0.7,0.3,1)" }}>
                     <image href={cityEntity.mapImageUrl} x={VB.x} y={VB.y} width={VB.w} height={VB.h} />
 
-                    {!districtId &&
-                      districts.map((d) => {
+                    {districts.map((d) => {
                         const isEditing = editingBoundaryId === d.id;
+                        const isSelected = districtId === d.id;
+                        // At city level every district's outline can be hovered/clicked; once drilled
+                        // into one, only its own outline stays on screen as a static bounds indicator.
+                        if (districtId && !isSelected && !isEditing) return null;
                         const boundary = isEditing ? boundaryDraft : d.boundary;
                         if (!boundary || boundary.length < 3) return null;
-                        const hovered = hoveredDistrictId === d.id;
+                        const hovered = !districtId && hoveredDistrictId === d.id;
+                        const lit = hovered || isSelected;
                         const pts = boundary.map((p) => {
                           const a = abs(p);
                           return `${a.x},${a.y}`;
@@ -356,22 +414,27 @@ export function MapApp() {
                           <polygon
                             key={d.id}
                             points={pts}
-                            fill={isEditing ? "rgba(95,208,232,0.10)" : hovered ? "rgba(232,163,61,0.10)" : "rgba(0,0,0,0)"}
-                            stroke={isEditing ? "#5fd0e8" : hovered ? "#ffd58a" : "transparent"}
+                            fill={isEditing ? "rgba(95,208,232,0.10)" : lit ? "rgba(232,163,61,0.10)" : "rgba(0,0,0,0)"}
+                            stroke={isEditing ? "#5fd0e8" : lit ? "#ffd58a" : "transparent"}
                             strokeWidth={3}
                             vectorEffect="non-scaling-stroke"
                             style={{
-                              cursor: editMode ? "pointer" : "pointer",
+                              cursor: districtId ? "default" : "pointer",
+                              pointerEvents: districtId ? "none" : "auto",
                               transition: isEditing ? undefined : "fill 0.15s, stroke 0.15s",
                               filter: isEditing
                                 ? "drop-shadow(0 0 5px #5fd0e8)"
-                                : hovered
+                                : lit
                                   ? "drop-shadow(0 0 4px #e8a33d) drop-shadow(0 0 10px #e8a33d)"
                                   : "none",
                             }}
                             onMouseEnter={() => setHoveredDistrictId(d.id)}
                             onMouseLeave={() => setHoveredDistrictId((cur) => (cur === d.id ? null : cur))}
                             onClick={(e) => {
+                              if (suppressNextClickRef.current) {
+                                suppressNextClickRef.current = false;
+                                return;
+                              }
                               if (editMode) {
                                 e.stopPropagation();
                                 startEditingBoundary(d);
@@ -469,7 +532,13 @@ export function MapApp() {
                             strokeWidth={2}
                             vectorEffect="non-scaling-stroke"
                             style={{ cursor: "pointer", filter: "drop-shadow(0 0 6px rgba(232,163,61,0.8))" }}
-                            onClick={() => selectLocation(l.id)}
+                            onClick={() => {
+                              if (suppressNextClickRef.current) {
+                                suppressNextClickRef.current = false;
+                                return;
+                              }
+                              selectLocation(l.id);
+                            }}
                           />
                         );
                       })}
