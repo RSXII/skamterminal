@@ -27,23 +27,24 @@ const FIREBASE_CONFIG = {
 const app = getApps().length ? getApps()[0] : initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
 
-// Positions read off the district-label centers on fate_city_gps.png.
+// Positions read directly off the font_district <text> labels in the vector
+// city map (Fate City.svg) — exact, not eyeballed: (x - viewBoxX) / viewBoxW.
 const CITY_HOTSPOTS = {
-  "district-weston-heights": { x: 20.6, y: 7.9 },
-  "district-warehouse-district": { x: 15.0, y: 18.0 },
-  "district-city-heights": { x: 56.9, y: 7.8 },
-  "district-downtown": { x: 48.0, y: 19.6 },
-  "district-sunny-estates": { x: 80.2, y: 22.9 },
-  "district-weston": { x: 19.1, y: 31.5 },
-  "district-sebring": { x: 39.0, y: 43.7 },
-  "district-crescent-hills": { x: 64.7, y: 49.7 },
-  "district-fcr-square": { x: 76.4, y: 36.8 },
-  "district-fulfillment-center": { x: 66.6, y: 26.8 },
-  "district-cooper-city": { x: 40.8, y: 63.9 },
-  "district-industrial-square": { x: 55.6, y: 63.9 },
-  "district-broad-heights": { x: 85.5, y: 61.3 },
-  "district-briarwood": { x: 61.8, y: 72.4 },
-  "district-ellis": { x: 55.6, y: 88.6 },
+  "district-weston-heights": { x: 17.6, y: 22.5 },
+  "district-warehouse-district": { x: 13.8, y: 27.8 },
+  "district-city-heights": { x: 49.9, y: 21.5 },
+  "district-downtown": { x: 45.0, y: 29.5 },
+  "district-sunny-estates": { x: 67.1, y: 29.5 },
+  "district-weston": { x: 15.5, y: 38.8 },
+  "district-sebring": { x: 37.5, y: 46.8 },
+  "district-crescent-hills": { x: 56.8, y: 53.8 },
+  "district-fcr-square": { x: 66.6, y: 39.1 },
+  "district-fulfillment-center": { x: 58.9, y: 34.8 },
+  "district-cooper-city": { x: 39.6, y: 63.5 },
+  "district-industrial-square": { x: 49.3, y: 63.5 },
+  "district-broad-heights": { x: 72.8, y: 62.1 },
+  "district-briarwood": { x: 58.7, y: 73.5 },
+  "district-ellis": { x: 47.1, y: 83.8 },
 };
 
 // Positions read off the matching label on each district's own detail map.

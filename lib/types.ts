@@ -117,4 +117,6 @@ export interface WindowState {
   h: number;
   z: number;
   minimized: boolean;
+  /** True while filling the desktop — x/y/w/h are kept as the size to restore to. */
+  maximized: boolean;
 }
