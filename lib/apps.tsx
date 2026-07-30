@@ -8,7 +8,8 @@ import type { AppDefinition } from "@/lib/types";
 import { BrowserApp } from "@/components/apps/BrowserApp";
 import { RealEstateApp } from "@/components/apps/RealEstateApp";
 import { PeopleApp } from "@/components/apps/PeopleApp";
-import { BrowserIcon, EstateIcon, PeopleIcon } from "@/components/os/icons";
+import { MapApp } from "@/components/apps/MapApp";
+import { BrowserIcon, EstateIcon, PeopleIcon, MapIcon } from "@/components/os/icons";
 
 export const APP_LIST: AppDefinition[] = [
   {
@@ -31,6 +32,13 @@ export const APP_LIST: AppDefinition[] = [
     icon: PeopleIcon,
     component: PeopleApp,
     defaultSize: { w: 820, h: 600 },
+  },
+  {
+    id: "map",
+    name: "Field Map",
+    icon: MapIcon,
+    component: MapApp,
+    defaultSize: { w: 920, h: 660 },
   },
 ];
 

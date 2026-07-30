@@ -106,9 +106,21 @@ function migrateSection(section, entityId) {
   });
 }
 
+// "_01" is the actual representative shot for a person — "_profile" is
+// usually a cropped/placeholder version. Lead the gallery with "_01" when
+// one exists; otherwise fall back to whatever's first in the source data.
+function leadWithMainImage(relPaths) {
+  const idx = relPaths.findIndex((p) => /_01\.(png|jpg|jpeg)$/i.test(p));
+  if (idx <= 0) return relPaths;
+  const reordered = [...relPaths];
+  const [main] = reordered.splice(idx, 1);
+  reordered.unshift(main);
+  return reordered;
+}
+
 async function migrateEntity(npc) {
   const images = [];
-  for (const relPath of npc.images ?? []) {
+  for (const relPath of leadWithMainImage(npc.images ?? [])) {
     const url = await uploadImage(relPath, npc.id);
     if (url) images.push(url);
   }

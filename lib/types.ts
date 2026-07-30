@@ -14,7 +14,7 @@ import type { ComponentType } from "react";
 // out before this terminal renders anything. Omit visibility, or set it to
 // "public", for content any in-world lookup could plausibly show.
 
-export type EntityKind = "briefing" | "person" | "organization";
+export type EntityKind = "briefing" | "person" | "organization" | "district" | "location";
 export type Visibility = "public" | "private";
 
 export interface EntityColors {
@@ -42,6 +42,12 @@ export interface EntityQuote {
   cite: string;
 }
 
+/** A point on a map image, as a percentage of its width/height — resolution-independent. */
+export interface MapPoint {
+  x: number;
+  y: number;
+}
+
 export interface Entity {
   id: string;
   kind: EntityKind;
@@ -55,6 +61,21 @@ export interface Entity {
   stats: EntityStat[];
   sections: EntitySection[];
   quote: EntityQuote | null;
+
+  // ── Map fields (districts + locations only) ──────────────────────────────
+  // The city map is one continuous vector canvas — every point below is a
+  // percentage of that same shared viewBox, not of a separate cropped image.
+  // Districts zoom the canvas in rather than swapping to a different map.
+  /** Districts only: legacy per-district map image, no longer used for rendering. */
+  mapImageUrl?: string;
+  /** Districts only: rough boundary polygon, for the hover-glow outline and the zoom-to-fit target. */
+  boundary?: MapPoint[];
+  /** Districts only: fallback point (e.g. polygon centroid) for districts without a boundary yet. */
+  cityHotspot?: MapPoint;
+  /** Locations only: id of the parent district entity. */
+  district?: string;
+  /** Locations only: where this location's pin sits on the shared city canvas. */
+  districtHotspot?: MapPoint;
 }
 
 export type ListingKind = "house" | "apartment";
@@ -101,4 +122,6 @@ export interface WindowState {
   h: number;
   z: number;
   minimized: boolean;
+  /** True while filling the desktop — x/y/w/h are kept as the size to restore to. */
+  maximized: boolean;
 }

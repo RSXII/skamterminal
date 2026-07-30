@@ -43,6 +43,7 @@ export function Desktop({ user, onLogout }: { user: string; onLogout: () => void
           h,
           z: nextZ.current++,
           minimized: false,
+          maximized: false,
         },
       ];
     });
@@ -56,6 +57,16 @@ export function Desktop({ user, onLogout }: { user: string; onLogout: () => void
 
   const moveWindow = useCallback((id: number, x: number, y: number) => {
     setWindows((wins) => wins.map((w) => (w.id === id ? { ...w, x, y } : w)));
+  }, []);
+
+  const resizeWindow = useCallback((id: number, w: number, h: number) => {
+    setWindows((wins) => wins.map((win) => (win.id === id ? { ...win, w, h } : win)));
+  }, []);
+
+  const toggleMaximize = useCallback((id: number) => {
+    setWindows((wins) =>
+      wins.map((w) => (w.id === id ? { ...w, maximized: !w.maximized, z: nextZ.current++ } : w))
+    );
   }, []);
 
   const minimizeWindow = useCallback((id: number) => {
@@ -135,9 +146,12 @@ export function Desktop({ user, onLogout }: { user: string; onLogout: () => void
             win={win}
             title={app.name}
             focused={win.id === focusedId}
+            minSize={app.minSize}
             onFocus={() => focusWindow(win.id)}
             onMove={(x, y) => moveWindow(win.id, x, y)}
+            onResize={(w, h) => resizeWindow(win.id, w, h)}
             onMinimize={() => minimizeWindow(win.id)}
+            onMaximizeToggle={() => toggleMaximize(win.id)}
             onClose={() => closeWindow(win.id)}
           >
             <AppComponent />

@@ -57,6 +57,16 @@ export function PeopleIcon({ className = "" }: { className?: string }) {
   );
 }
 
+export function MapIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.5" className={className} aria-hidden>
+      <path d="M11 7 L4 9.5 V26 L11 23.5 L21 26 L28 23.5 V7 L21 9.5 L11 7 Z" strokeLinejoin="round" />
+      <path d="M11 7 V23.5 M21 9.5 V26" opacity="0.6" />
+      <circle cx="16" cy="15" r="2.5" fill="currentColor" fillOpacity="0.3" />
+    </svg>
+  );
+}
+
 export function SpeakerIcon({
   className = "",
   muted = false,
