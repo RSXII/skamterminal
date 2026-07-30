@@ -5,12 +5,14 @@ import { BootSequence } from "@/components/os/BootSequence";
 import { LoginScreen } from "@/components/os/LoginScreen";
 import { Desktop } from "@/components/os/Desktop";
 import { playClick } from "@/lib/sound";
+import type { Role } from "@/lib/auth";
 
 type Phase = "boot" | "login" | "desktop";
 
 export function FCOS() {
   const [phase, setPhase] = useState<Phase>("boot");
   const [user, setUser] = useState("");
+  const [role, setRole] = useState<Role>("player");
 
   // Global UI click sound: any interactive element anywhere in the OS.
   useEffect(() => {
@@ -30,12 +32,14 @@ export function FCOS() {
   }, []);
 
   const handleBootComplete = useCallback(() => setPhase("login"), []);
-  const handleLogin = useCallback((username: string) => {
+  const handleLogin = useCallback((username: string, loginRole: Role) => {
     setUser(username);
+    setRole(loginRole);
     setPhase("desktop");
   }, []);
   const handleLogout = useCallback(() => {
     setUser("");
+    setRole("player");
     setPhase("login");
   }, []);
 
@@ -43,7 +47,7 @@ export function FCOS() {
     <div className="crt fixed inset-0 overflow-hidden bg-ink select-none">
       {phase === "boot" && <BootSequence onComplete={handleBootComplete} />}
       {phase === "login" && <LoginScreen onLogin={handleLogin} />}
-      {phase === "desktop" && <Desktop user={user} onLogout={handleLogout} />}
+      {phase === "desktop" && <Desktop user={user} role={role} onLogout={handleLogout} />}
     </div>
   );
 }

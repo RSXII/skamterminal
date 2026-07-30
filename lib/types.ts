@@ -66,8 +66,14 @@ export interface Entity {
   // The city map is one continuous vector canvas — every point below is a
   // percentage of that same shared viewBox, not of a separate cropped image.
   // Districts zoom the canvas in rather than swapping to a different map.
-  /** Districts only: legacy per-district map image, no longer used for rendering. */
+  /** City entity only: the base overview raster covering the whole shared canvas. */
   mapImageUrl?: string;
+  /**
+   * City entity only: 2x-detail raster tiles for the four quadrants of the shared canvas
+   * (each covering half its width/height), loaded in only once the player zooms in close
+   * enough to be looking at that quadrant — see TILE_ZOOM_THRESHOLD in MapApp.tsx.
+   */
+  mapTiles?: { nw: string; ne: string; sw: string; se: string };
   /** Districts only: rough boundary polygon, for the hover-glow outline and the zoom-to-fit target. */
   boundary?: MapPoint[];
   /** Districts only: fallback point (e.g. polygon centroid) for districts without a boundary yet. */

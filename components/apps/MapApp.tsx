@@ -5,6 +5,7 @@ import { fetchEntities, updateDistrictBoundary } from "@/lib/entities";
 import type { Entity, MapPoint } from "@/lib/types";
 import { Rich } from "@/components/entity/Rich";
 import { DossierPanel } from "@/components/entity/DossierPanel";
+import { useSession } from "@/lib/session";
 
 const CITY_ENTITY_ID = "city-overview";
 // The whole city is one shared vector canvas — every hotspot/boundary point
@@ -16,6 +17,17 @@ const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 6;
 const PAN_THRESHOLD = 5; // px of pointer movement before a press-drag counts as panning, not a click
 const PIN_BASE_R = 46; // user units at scale 1 — divided by current scale to stay a constant screen size
+
+// Detail tiles: the base overview image is soft once the player is zoomed in close, so past this
+// scale we additionally load in the 2x-density quadrant tile(s) covering whatever's on screen.
+const TILE_ZOOM_THRESHOLD = 3;
+const TILE_HALF = VB.w / 2;
+const QUADRANTS = [
+  { key: "nw", x: VB.x, y: VB.y, w: TILE_HALF, h: TILE_HALF },
+  { key: "ne", x: VB.x + TILE_HALF, y: VB.y, w: TILE_HALF, h: TILE_HALF },
+  { key: "sw", x: VB.x, y: VB.y + TILE_HALF, w: TILE_HALF, h: TILE_HALF },
+  { key: "se", x: VB.x + TILE_HALF, y: VB.y + TILE_HALF, w: TILE_HALF, h: TILE_HALF },
+] as const;
 
 function abs(pct: MapPoint) {
   return { x: VB.x + (pct.x / 100) * VB.w, y: VB.y + (pct.y / 100) * VB.h };
@@ -35,6 +47,23 @@ function fitScaleFor(bbox: { minX: number; maxX: number; minY: number; maxY: num
   return Math.min(VB.w / Math.max(w, 1), VB.h / Math.max(h, 1));
 }
 
+/** Which detail-tile quadrants (if any) currently overlap the visible viewport. */
+function activeTilesFor(
+  totalScale: number,
+  focusPoint: { x: number; y: number },
+  viewportRect: { width: number; height: number } | null
+): (typeof QUADRANTS)[number]["key"][] {
+  if (totalScale < TILE_ZOOM_THRESHOLD || !viewportRect || !viewportRect.width || !viewportRect.height) return [];
+  const frameScale = Math.min(viewportRect.width / VB.w, viewportRect.height / VB.h);
+  const halfWorldW = viewportRect.width / (frameScale * totalScale) / 2;
+  const halfWorldH = viewportRect.height / (frameScale * totalScale) / 2;
+  const minX = focusPoint.x - halfWorldW;
+  const maxX = focusPoint.x + halfWorldW;
+  const minY = focusPoint.y - halfWorldH;
+  const maxY = focusPoint.y + halfWorldH;
+  return QUADRANTS.filter((q) => minX < q.x + q.w && maxX > q.x && minY < q.y + q.h && maxY > q.y).map((q) => q.key);
+}
+
 interface Focus {
   point: { x: number; y: number }; // absolute map units
   baseScale: number;
@@ -43,6 +72,7 @@ interface Focus {
 const CITY_FOCUS: Focus = { point: CENTER, baseScale: 1 };
 
 export function MapApp() {
+  const { role } = useSession();
   const [entities, setEntities] = useState<Entity[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [districtId, setDistrictId] = useState<string | null>(null);
@@ -58,13 +88,21 @@ export function MapApp() {
   const [boundaryDraft, setBoundaryDraft] = useState<MapPoint[] | null>(null);
   const [savingBoundary, setSavingBoundary] = useState(false);
   const [isDraggingMap, setIsDraggingMap] = useState(false);
+  const [viewportSize, setViewportSize] = useState<{ width: number; height: number } | null>(null);
   const draggingVertex = useRef<number | null>(null);
-  const panRef = useRef<{ startClientX: number; startClientY: number; startFocusX: number; startFocusY: number; moved: boolean } | null>(
-    null
-  );
+  const panRef = useRef<{
+    startClientX: number;
+    startClientY: number;
+    startFocusX: number;
+    startFocusY: number;
+    moved: boolean;
+    liveX: number;
+    liveY: number;
+  } | null>(null);
   const suppressNextClickRef = useRef(false);
 
   const svgRef = useRef<SVGSVGElement>(null);
+  const gRef = useRef<SVGGElement>(null);
 
   useEffect(() => {
     fetchEntities()
@@ -77,6 +115,22 @@ export function MapApp() {
         setStatus("error");
       });
   }, []);
+
+  // Tracks the map's on-screen size so we know which detail tile(s) the current pan/zoom
+  // is actually looking at — read from state rather than the ref during render (refs aren't
+  // meant to be read there) and kept live across container/window resizes for free.
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const update = () => setViewportSize({ width: svg.clientWidth, height: svg.clientHeight });
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(svg);
+    return () => observer.disconnect();
+    // The <svg> only exists once status flips to "ready" (see the JSX below), so this must
+    // re-run then — an empty dep array would observe nothing, since svgRef.current is still
+    // null on the very first effect pass.
+  }, [status]);
 
   const cityEntity = entities.find((e) => e.id === CITY_ENTITY_ID);
   const districts = useMemo(() => entities.filter((e) => e.kind === "district"), [entities]);
@@ -141,6 +195,9 @@ export function MapApp() {
   const matrixE = CENTER.x - totalScale * focus.point.x;
   const matrixF = CENTER.y - totalScale * focus.point.y;
   const transform = `matrix(${totalScale},0,0,${totalScale},${matrixE},${matrixF})`;
+  // Not tracked during a live pan drag, since that's handled by direct DOM writes and only
+  // commits to state (focus, and so this) on release.
+  const activeTileKeys = activeTilesFor(totalScale, focus.point, viewportSize);
 
   function zoomBy(factor: number) {
     setZoomMultiplier((z) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * factor)));
@@ -220,6 +277,8 @@ export function MapApp() {
       startFocusX: focus.point.x,
       startFocusY: focus.point.y,
       moved: false,
+      liveX: focus.point.x,
+      liveY: focus.point.y,
     };
   }
 
@@ -251,15 +310,26 @@ export function MapApp() {
     const frameScale = Math.min(rect.width / VB.w, rect.height / VB.h);
     const worldDx = dx / (frameScale * totalScale);
     const worldDy = dy / (frameScale * totalScale);
-    // Captured startFocusX/Y as locals above, not read from panRef.current inside this updater —
-    // React can invoke a setState updater after a later pointerup already cleared the ref, which
-    // was throwing "can't access property startFocusX, panRef.current is null" in production.
     const nextPoint = { x: startFocusX - worldDx, y: startFocusY - worldDy };
-    setFocus((f) => ({ ...f, point: nextPoint }));
+    panRef.current.liveX = nextPoint.x;
+    panRef.current.liveY = nextPoint.y;
+    // Write the drag position straight to the DOM instead of through React state — with ~6000
+    // vector elements in the map, a setState (and the re-render it triggers) on every pointermove
+    // was visibly janky. State only gets one commit, at pointerup, via handleMapPointerUp below.
+    const g = gRef.current;
+    if (g) {
+      const e2 = CENTER.x - totalScale * nextPoint.x;
+      const f2 = CENTER.y - totalScale * nextPoint.y;
+      g.style.transform = `matrix(${totalScale},0,0,${totalScale},${e2},${f2})`;
+    }
   }
 
   function handleMapPointerUp() {
     draggingVertex.current = null;
+    if (panRef.current?.moved) {
+      const { liveX, liveY } = panRef.current;
+      setFocus((f) => ({ ...f, point: { x: liveX, y: liveY } }));
+    }
     panRef.current = null;
     setIsDraggingMap(false);
   }
@@ -305,7 +375,7 @@ export function MapApp() {
             </>
           )}
         </div>
-        {!selectedLocation && (
+        {!selectedLocation && role === "admin" && (
           <button
             onClick={() => {
               setEditMode((v) => !v);
@@ -393,8 +463,18 @@ export function MapApp() {
                   onPointerUp={handleMapPointerUp}
                   onPointerLeave={handleMapPointerUp}
                 >
-                  <g style={{ transform, transition: isDraggingMap ? "none" : "transform 0.6s cubic-bezier(0.2,0.7,0.3,1)" }}>
+                  <g
+                    ref={gRef}
+                    style={{ transform, transition: isDraggingMap ? "none" : "transform 0.6s cubic-bezier(0.2,0.7,0.3,1)" }}
+                  >
                     <image href={cityEntity.mapImageUrl} x={VB.x} y={VB.y} width={VB.w} height={VB.h} />
+
+                    {/* 2x-detail tiles, layered over the base image, loaded in only for whichever
+                        quadrant(s) are on screen once zoomed in close enough to need them. */}
+                    {cityEntity.mapTiles &&
+                      QUADRANTS.filter((q) => activeTileKeys.includes(q.key)).map((q) => (
+                        <image key={q.key} href={cityEntity.mapTiles![q.key]} x={q.x} y={q.y} width={q.w} height={q.h} />
+                      ))}
 
                     {districts.map((d) => {
                         const isEditing = editingBoundaryId === d.id;
@@ -410,39 +490,50 @@ export function MapApp() {
                           const a = abs(p);
                           return `${a.x},${a.y}`;
                         }).join(" ");
+                        const glowColor = isEditing ? "#5fd0e8" : "#ffd58a";
                         return (
-                          <polygon
-                            key={d.id}
-                            points={pts}
-                            fill={isEditing ? "rgba(95,208,232,0.10)" : lit ? "rgba(232,163,61,0.10)" : "rgba(0,0,0,0)"}
-                            stroke={isEditing ? "#5fd0e8" : lit ? "#ffd58a" : "transparent"}
-                            strokeWidth={3}
-                            vectorEffect="non-scaling-stroke"
-                            style={{
-                              cursor: districtId ? "default" : "pointer",
-                              pointerEvents: districtId ? "none" : "auto",
-                              transition: isEditing ? undefined : "fill 0.15s, stroke 0.15s",
-                              filter: isEditing
-                                ? "drop-shadow(0 0 5px #5fd0e8)"
-                                : lit
-                                  ? "drop-shadow(0 0 4px #e8a33d) drop-shadow(0 0 10px #e8a33d)"
-                                  : "none",
-                            }}
-                            onMouseEnter={() => setHoveredDistrictId(d.id)}
-                            onMouseLeave={() => setHoveredDistrictId((cur) => (cur === d.id ? null : cur))}
-                            onClick={(e) => {
-                              if (suppressNextClickRef.current) {
-                                suppressNextClickRef.current = false;
-                                return;
-                              }
-                              if (editMode) {
-                                e.stopPropagation();
-                                startEditingBoundary(d);
-                              } else {
-                                focusDistrict(d.id);
-                              }
-                            }}
-                          />
+                          <g key={d.id}>
+                            {/* Cheap glow: a wide, low-opacity duplicate stroke instead of a
+                                drop-shadow filter — with ~6000 map elements underneath, a blurred
+                                filter recomputed every paint (e.g. while panning) was visibly janky. */}
+                            {(isEditing || lit) && (
+                              <polygon
+                                points={pts}
+                                fill="none"
+                                stroke={glowColor}
+                                strokeOpacity={0.35}
+                                strokeWidth={14}
+                                vectorEffect="non-scaling-stroke"
+                                style={{ pointerEvents: "none" }}
+                              />
+                            )}
+                            <polygon
+                              points={pts}
+                              fill={isEditing ? "rgba(95,208,232,0.10)" : lit ? "rgba(232,163,61,0.10)" : "rgba(0,0,0,0)"}
+                              stroke={isEditing ? "#5fd0e8" : lit ? "#ffd58a" : "transparent"}
+                              strokeWidth={3}
+                              vectorEffect="non-scaling-stroke"
+                              style={{
+                                cursor: districtId ? "default" : "pointer",
+                                pointerEvents: districtId ? "none" : "auto",
+                                transition: isEditing ? undefined : "fill 0.15s, stroke 0.15s",
+                              }}
+                              onMouseEnter={() => setHoveredDistrictId(d.id)}
+                              onMouseLeave={() => setHoveredDistrictId((cur) => (cur === d.id ? null : cur))}
+                              onClick={(e) => {
+                                if (suppressNextClickRef.current) {
+                                  suppressNextClickRef.current = false;
+                                  return;
+                                }
+                                if (editMode) {
+                                  e.stopPropagation();
+                                  startEditingBoundary(d);
+                                } else {
+                                  focusDistrict(d.id);
+                                }
+                              }}
+                            />
+                          </g>
                         );
                       })}
 
@@ -531,7 +622,12 @@ export function MapApp() {
                             stroke={active ? "#ffd58a" : "#e8a33d"}
                             strokeWidth={2}
                             vectorEffect="non-scaling-stroke"
-                            style={{ cursor: "pointer", filter: "drop-shadow(0 0 6px rgba(232,163,61,0.8))" }}
+                            style={{
+                              cursor: "pointer",
+                              // Glow only the active pin — a permanent blur filter on every pin in a
+                              // district (some have a dozen+) was a needless per-pin paint cost.
+                              filter: active ? "drop-shadow(0 0 6px rgba(232,163,61,0.8))" : "none",
+                            }}
                             onClick={() => {
                               if (suppressNextClickRef.current) {
                                 suppressNextClickRef.current = false;

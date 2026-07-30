@@ -4,9 +4,11 @@ import { useEffect, useState } from "react";
 import { SkamSigil, SpeakerIcon } from "@/components/os/icons";
 import { getVolume, setVolume as setGlobalVolume, playClick } from "@/lib/sound";
 import type { AppDefinition, WindowState } from "@/lib/types";
+import type { Role } from "@/lib/auth";
 
 interface TaskbarProps {
   user: string;
+  role: Role;
   windows: WindowState[];
   apps: Record<string, AppDefinition>;
   focusedId: number | null;
@@ -85,7 +87,7 @@ function VolumeControl() {
   );
 }
 
-export function Taskbar({ user, windows, apps, focusedId, onTaskClick, onLogout }: TaskbarProps) {
+export function Taskbar({ user, role, windows, apps, focusedId, onTaskClick, onLogout }: TaskbarProps) {
   return (
     <div className="absolute inset-x-0 bottom-0 z-[5000] flex h-12 items-center gap-3 border-t border-line bg-ink-2/95 px-3 backdrop-blur">
       {/* emblem + user */}
@@ -128,7 +130,7 @@ export function Taskbar({ user, windows, apps, focusedId, onTaskClick, onLogout 
       {/* tray */}
       <div className="flex items-center gap-3 border-l border-line pl-3">
         <div className="hidden font-[family-name:var(--font-tech)] text-[9px] tracking-[0.2em] text-gold-faint md:block">
-          ● SECURE&nbsp;&nbsp;CLEARANCE: OMEGA
+          ● SECURE&nbsp;&nbsp;CLEARANCE: {role === "admin" ? "OMEGA" : "STANDARD"}
         </div>
         <VolumeControl />
         <Clock />
