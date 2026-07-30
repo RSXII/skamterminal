@@ -47,6 +47,25 @@ function fitScaleFor(bbox: { minX: number; maxX: number; minY: number; maxY: num
   return Math.min(VB.w / Math.max(w, 1), VB.h / Math.max(h, 1));
 }
 
+/** Screen (client) coords -> absolute map-unit coords, given a specific pan/zoom state. */
+function invertScreen(
+  clientX: number,
+  clientY: number,
+  rect: { left: number; top: number; width: number; height: number },
+  totalScale: number,
+  matrixE: number,
+  matrixF: number
+) {
+  const frameScale = Math.min(rect.width / VB.w, rect.height / VB.h);
+  const renderedW = VB.w * frameScale;
+  const renderedH = VB.h * frameScale;
+  const offsetX = (rect.width - renderedW) / 2;
+  const offsetY = (rect.height - renderedH) / 2;
+  const outerX = VB.x + (clientX - rect.left - offsetX) / frameScale;
+  const outerY = VB.y + (clientY - rect.top - offsetY) / frameScale;
+  return { x: (outerX - matrixE) / totalScale, y: (outerY - matrixF) / totalScale };
+}
+
 /** Which detail-tile quadrants (if any) currently overlap the visible viewport. */
 function activeTilesFor(
   totalScale: number,
@@ -88,8 +107,16 @@ export function MapApp() {
   const [boundaryDraft, setBoundaryDraft] = useState<MapPoint[] | null>(null);
   const [savingBoundary, setSavingBoundary] = useState(false);
   const [isDraggingMap, setIsDraggingMap] = useState(false);
+  const [isWheelZooming, setIsWheelZooming] = useState(false);
   const [viewportSize, setViewportSize] = useState<{ width: number; height: number } | null>(null);
   const draggingVertex = useRef<number | null>(null);
+  // Mirrors `focus` so the wheel handler (a native listener, attached once — see the effect
+  // below) can always read the current value instead of a stale closure from attach-time.
+  const focusRef = useRef(focus);
+  useEffect(() => {
+    focusRef.current = focus;
+  }, [focus]);
+  const wheelZoomTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const panRef = useRef<{
     startClientX: number;
     startClientY: number;
@@ -207,18 +234,54 @@ export function MapApp() {
   function screenToPct(clientX: number, clientY: number): MapPoint | null {
     const svg = svgRef.current;
     if (!svg) return null;
-    const rect = svg.getBoundingClientRect();
-    const frameScale = Math.min(rect.width / VB.w, rect.height / VB.h);
-    const renderedW = VB.w * frameScale;
-    const renderedH = VB.h * frameScale;
-    const offsetX = (rect.width - renderedW) / 2;
-    const offsetY = (rect.height - renderedH) / 2;
-    const outerX = VB.x + (clientX - rect.left - offsetX) / frameScale;
-    const outerY = VB.y + (clientY - rect.top - offsetY) / frameScale;
-    const worldX = (outerX - matrixE) / totalScale;
-    const worldY = (outerY - matrixF) / totalScale;
-    return { x: Math.round(((worldX - VB.x) / VB.w) * 1000) / 10, y: Math.round(((worldY - VB.y) / VB.h) * 1000) / 10 };
+    const world = invertScreen(clientX, clientY, svg.getBoundingClientRect(), totalScale, matrixE, matrixF);
+    return { x: Math.round(((world.x - VB.x) / VB.w) * 1000) / 10, y: Math.round(((world.y - VB.y) / VB.h) * 1000) / 10 };
   }
+
+  // Cursor-anchored scroll-wheel zoom: keeps the map point under the cursor fixed on screen
+  // as the scale changes, like any standard map app. Needs a real (non-React) event listener
+  // so preventDefault actually stops the page from scrolling — React's synthetic onWheel is
+  // passive by default and can't do that. Attached once; reads focusRef instead of closing
+  // over `focus` so it never goes stale, and recomputes scale from the updater's own fresh `z`
+  // so back-to-back wheel ticks (a fast scroll) each anchor off the truly-latest zoom, not a
+  // value from before earlier-queued ticks in the same burst were applied.
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    function handleWheel(e: WheelEvent) {
+      e.preventDefault();
+      const rect = svg!.getBoundingClientRect();
+      setIsWheelZooming(true);
+      if (wheelZoomTimeout.current) clearTimeout(wheelZoomTimeout.current);
+      wheelZoomTimeout.current = setTimeout(() => setIsWheelZooming(false), 150);
+      const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      setZoomMultiplier((z) => {
+        const f = focusRef.current;
+        const oldTotalScale = f.baseScale * z;
+        const oldMatrixE = CENTER.x - oldTotalScale * f.point.x;
+        const oldMatrixF = CENTER.y - oldTotalScale * f.point.y;
+        const cursorWorld = invertScreen(e.clientX, e.clientY, rect, oldTotalScale, oldMatrixE, oldMatrixF);
+        const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * factor));
+        const newTotalScale = f.baseScale * newZoom;
+        const ratio = oldTotalScale / newTotalScale;
+        setFocus({
+          point: {
+            x: cursorWorld.x - (cursorWorld.x - f.point.x) * ratio,
+            y: cursorWorld.y - (cursorWorld.y - f.point.y) * ratio,
+          },
+          baseScale: f.baseScale,
+        });
+        return newZoom;
+      });
+    }
+    svg.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      svg.removeEventListener("wheel", handleWheel);
+      if (wheelZoomTimeout.current) clearTimeout(wheelZoomTimeout.current);
+    };
+    // Same reasoning as the ResizeObserver effect above: the <svg> doesn't exist until status
+    // flips to "ready", so an empty dep array would attach to nothing.
+  }, [status]);
 
   const startEditingBoundary = useCallback((d: Entity) => {
     setEditingBoundaryId(d.id);
@@ -465,7 +528,10 @@ export function MapApp() {
                 >
                   <g
                     ref={gRef}
-                    style={{ transform, transition: isDraggingMap ? "none" : "transform 0.6s cubic-bezier(0.2,0.7,0.3,1)" }}
+                    style={{
+                      transform,
+                      transition: isDraggingMap || isWheelZooming ? "none" : "transform 0.6s cubic-bezier(0.2,0.7,0.3,1)",
+                    }}
                   >
                     <image href={cityEntity.mapImageUrl} x={VB.x} y={VB.y} width={VB.w} height={VB.h} />
 
