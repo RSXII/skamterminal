@@ -225,7 +225,12 @@ export function MapApp() {
   const [zoomMultiplier, setZoomMultiplier] = useState(1);
   const [editMode, setEditMode] = useState(false);
   const [target, setTarget] = useState("");
-  const [placed, setPlaced] = useState<Record<string, MapPoint>>({});
+  // Staged-not-written placements, keyed by entity/listing id — see the click handler below.
+  // A `district` is only carried for a person/org home/HQ pin, whose parent district isn't
+  // preassigned like a location's; districts and locations don't need it echoed back.
+  const [placed, setPlaced] = useState<
+    Record<string, MapPoint & { district?: string }>
+  >({});
   const [editingBoundaryId, setEditingBoundaryId] = useState<string | null>(
     null,
   );
@@ -308,8 +313,20 @@ export function MapApp() {
       listings.filter((l) => l.districtId === districtId && l.districtHotspot),
     [listings, districtId],
   );
-  // Unified for pin rendering / zoom-to lookups — a listing pin behaves exactly like any other
-  // location pin once placed, it just also carries a Gilded Key listing behind it.
+  // People/orgs whose home/HQ has been placed in (and revealed for) this district — same
+  // district + districtHotspot fields as a location, just on a person/organization entity.
+  const districtResidents = useMemo(
+    () =>
+      entities.filter(
+        (e) =>
+          (e.kind === "person" || e.kind === "organization") &&
+          e.district === districtId &&
+          e.districtHotspot,
+      ),
+    [entities, districtId],
+  );
+  // Unified for pin rendering / zoom-to lookups — a listing or resident pin behaves exactly
+  // like any other location pin once placed, it just resolves to different dossier content.
   const districtPins = useMemo(
     () => [
       ...districtLocations
@@ -319,8 +336,12 @@ export function MapApp() {
         id: l.id,
         hotspot: l.districtHotspot!,
       })),
+      ...districtResidents.map((e) => ({
+        id: e.id,
+        hotspot: e.districtHotspot!,
+      })),
     ],
-    [districtLocations, districtListings],
+    [districtLocations, districtListings, districtResidents],
   );
   const unplacedListings = districtId
     ? listings.filter(
@@ -328,9 +349,28 @@ export function MapApp() {
           !l.districtHotspot && (!l.districtId || l.districtId === districtId),
       )
     : [];
+  // People/orgs with no home/HQ pin anywhere yet — unlike locations, they have no district
+  // preassigned ahead of time, so any of them can be placed while looking at any district.
+  // Note: a resident already placed but not yet `locationRevealed` also reads as unplaced here,
+  // since fetchEntities() strips its hotspot for every viewer — harmless in practice (a GM
+  // re-placing one just restages the same point), but worth knowing if it ever looks odd.
+  const unplacedResidents = districtId
+    ? entities.filter(
+        (e) =>
+          (e.kind === "person" || e.kind === "organization") &&
+          !e.districtHotspot &&
+          !placed[e.id],
+      )
+    : [];
   const selectedLocation = locations.find((l) => l.id === locationId) ?? null;
   const selectedListing = listings.find((l) => l.id === locationId) ?? null;
-  const sheetOpen = !!selectedLocation || !!selectedListing;
+  const selectedResident =
+    entities.find(
+      (e) =>
+        e.id === locationId &&
+        (e.kind === "person" || e.kind === "organization"),
+    ) ?? null;
+  const sheetOpen = !!selectedLocation || !!selectedListing || !!selectedResident;
 
   const goCity = useCallback(() => {
     setDistrictId(null);
@@ -404,13 +444,19 @@ export function MapApp() {
     ],
   );
 
-  /** Cross-app deep link landing: drill into a pin's district and zoom to it, whether it's a real Entity location or a Gilded Key listing. */
+  /** Cross-app deep link landing: drill into a pin's district and zoom to it, whether it's a real Entity location, a person/org home/HQ, or a Gilded Key listing. */
   const goToLocation = useCallback(
     (id: string) => {
       const loc = locations.find((l) => l.id === id);
       const listing = listings.find((l) => l.id === id);
-      const targetDistrictId = loc?.district ?? listing?.districtId;
-      const hotspot = loc?.districtHotspot ?? listing?.districtHotspot;
+      const resident = entities.find(
+        (e) =>
+          e.id === id && (e.kind === "person" || e.kind === "organization"),
+      );
+      const targetDistrictId =
+        loc?.district ?? listing?.districtId ?? resident?.district;
+      const hotspot =
+        loc?.districtHotspot ?? listing?.districtHotspot ?? resident?.districtHotspot;
       if (!targetDistrictId || !hotspot) return;
       const d = districts.find((x) => x.id === targetDistrictId);
       if (!d) return;
@@ -426,7 +472,7 @@ export function MapApp() {
       });
       setLocationId(id);
     },
-    [locations, listings, districts, viewportSize],
+    [locations, listings, entities, districts, viewportSize],
   );
 
   const totalScale = focus.baseScale * zoomMultiplier;
@@ -664,7 +710,10 @@ export function MapApp() {
   }
 
   const unplaced = districtId
-    ? districtLocations.filter((l) => !l.districtHotspot && !placed[l.id])
+    ? [
+        ...districtLocations.filter((l) => !l.districtHotspot && !placed[l.id]),
+        ...unplacedResidents,
+      ]
     : districts.filter((d) => !d.cityHotspot && !d.boundary && !placed[d.id]);
 
   return (
@@ -752,7 +801,9 @@ export function MapApp() {
                 </span>
               </button>
             ))
-          ) : districtLocations.length > 0 || districtListings.length > 0 ? (
+          ) : districtLocations.length > 0 ||
+            districtListings.length > 0 ||
+            districtResidents.length > 0 ? (
             <>
               {districtLocations.map((l) => (
                 <button
@@ -796,6 +847,29 @@ export function MapApp() {
                   </span>
                   <span className="text-[9px] tracking-[0.1em] text-gold-faint uppercase">
                     Gilded Key Listing
+                  </span>
+                </button>
+              ))}
+              {districtResidents.map((e) => (
+                <button
+                  key={e.id}
+                  onClick={() => selectLocation(e.id)}
+                  onMouseEnter={() => setHoveredLocationId(e.id)}
+                  onMouseLeave={() =>
+                    setHoveredLocationId((cur) => (cur === e.id ? null : cur))
+                  }
+                  className={`border-b border-line/50 px-3 py-2.5 text-left text-xs transition-colors ${
+                    locationId === e.id
+                      ? "bg-panel-2 text-gold"
+                      : "text-gold-dim hover:bg-panel hover:text-gold"
+                  }`}
+                >
+                  <Rich
+                    html={e.name}
+                    className="block truncate font-semibold"
+                  />
+                  <span className="text-[9px] tracking-[0.1em] text-gold-faint uppercase">
+                    {e.kind === "person" ? "Home" : "Headquarters"}
                   </span>
                 </button>
               ))}
@@ -844,7 +918,17 @@ export function MapApp() {
                       const id = target.startsWith("entity:")
                         ? target.slice("entity:".length)
                         : target;
-                      setPlaced((prev) => ({ ...prev, [id]: pct }));
+                      // Only a person/org home/HQ pin needs its district echoed — it has no
+                      // preassigned parent district the way a location already does.
+                      const targetEntity = entities.find((e) => e.id === id);
+                      const isResident =
+                        !!districtId &&
+                        (targetEntity?.kind === "person" ||
+                          targetEntity?.kind === "organization");
+                      setPlaced((prev) => ({
+                        ...prev,
+                        [id]: isResident ? { ...pct, district: districtId! } : pct,
+                      }));
                     }
                     setTarget("");
                   }}
@@ -1173,7 +1257,7 @@ export function MapApp() {
                     sheetOpen ? "h-[60%]" : "h-0"
                   }`}
                 >
-                  {(selectedLocation || selectedListing) && (
+                  {(selectedLocation || selectedListing || selectedResident) && (
                     <div className="relative h-full overflow-y-auto">
                       <button
                         onClick={() => selectLocation(locationId!)}
@@ -1191,22 +1275,39 @@ export function MapApp() {
                       </button>
                       {selectedLocation ? (
                         <DossierPanel entity={selectedLocation} />
+                      ) : selectedListing ? (
+                        <DossierPanel
+                          entity={listingToDossierEntity(selectedListing)}
+                          showNotes={false}
+                          after={
+                            <button
+                              onClick={() =>
+                                navigate({
+                                  app: "estates",
+                                  listingId: selectedListing.id,
+                                })
+                              }
+                              className="fc-btn mt-4 text-xs"
+                            >
+                              Open in Gilded Key
+                            </button>
+                          }
+                        />
                       ) : (
-                        selectedListing && (
+                        selectedResident && (
                           <DossierPanel
-                            entity={listingToDossierEntity(selectedListing)}
-                            showNotes={false}
+                            entity={selectedResident}
                             after={
                               <button
                                 onClick={() =>
                                   navigate({
-                                    app: "estates",
-                                    listingId: selectedListing.id,
+                                    app: "profiles",
+                                    entityId: selectedResident.id,
                                   })
                                 }
                                 className="fc-btn mt-4 text-xs"
                               >
-                                Open in Gilded Key
+                                Open Profile
                               </button>
                             }
                           />
@@ -1260,6 +1361,11 @@ export function MapApp() {
                       <option value="">— pick an unplaced entity —</option>
                       {unplaced.map((e) => (
                         <option key={e.id} value={`entity:${e.id}`}>
+                          {e.kind === "person"
+                            ? "◆ "
+                            : e.kind === "organization"
+                              ? "◇ "
+                              : ""}
                           {e.id}
                         </option>
                       ))}

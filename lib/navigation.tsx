@@ -8,7 +8,10 @@
 
 import { createContext, useCallback, useContext, type ReactNode } from "react";
 
-export type AppFocus = { app: "map"; locationId: string } | { app: "estates"; listingId: string };
+export type AppFocus =
+  | { app: "map"; locationId: string }
+  | { app: "estates"; listingId: string }
+  | { app: "profiles"; entityId: string };
 
 interface NavigationContextValue {
   navigate: (focus: AppFocus) => void;

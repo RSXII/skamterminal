@@ -11,10 +11,16 @@ function isPublic<T extends { visibility?: "public" | "private" }>(item: T) {
 
 /** Strips GM-only sections/stats — this terminal only ever shows what an in-world lookup would. */
 function toPublicView(entity: Entity): Entity {
+  // A person/org's home/HQ pin is GM-only knowledge until the party finds it in fiction —
+  // same treatment as a private stat/section, so it's withheld here rather than gated by role.
+  const hideLocation =
+    (entity.kind === "person" || entity.kind === "organization") && !entity.locationRevealed;
   return {
     ...entity,
     stats: entity.stats.filter(isPublic) as EntityStat[],
     sections: entity.sections.filter(isPublic) as EntitySection[],
+    district: hideLocation ? undefined : entity.district,
+    districtHotspot: hideLocation ? undefined : entity.districtHotspot,
   };
 }
 
