@@ -5,6 +5,7 @@ import { APPS, APP_LIST } from "@/lib/apps";
 import type { WindowState } from "@/lib/types";
 import type { Role } from "@/lib/auth";
 import { SessionProvider } from "@/lib/session";
+import { NavigationProvider, type AppFocus } from "@/lib/navigation";
 import { OSWindow } from "@/components/os/Window";
 import { Taskbar } from "@/components/os/Taskbar";
 import { SkamSigil } from "@/components/os/icons";
@@ -12,6 +13,7 @@ import { SkamSigil } from "@/components/os/icons";
 export function Desktop({ user, role, onLogout }: { user: string; role: Role; onLogout: () => void }) {
   const [windows, setWindows] = useState<WindowState[]>([]);
   const [selectedIcon, setSelectedIcon] = useState<string | null>(null);
+  const [pendingFocus, setPendingFocus] = useState<Partial<Record<string, AppFocus>>>({});
   const nextId = useRef(1);
   const nextZ = useRef(10);
 
@@ -49,6 +51,18 @@ export function Desktop({ user, role, onLogout }: { user: string; role: Role; on
         },
       ];
     });
+  }, []);
+
+  const navigate = useCallback(
+    (focus: AppFocus) => {
+      openApp(focus.app);
+      setPendingFocus((prev) => ({ ...prev, [focus.app]: focus }));
+    },
+    [openApp]
+  );
+
+  const consumeFocus = useCallback((appId: string) => {
+    setPendingFocus((prev) => ({ ...prev, [appId]: undefined }));
   }, []);
 
   const focusWindow = useCallback((id: number) => {
@@ -98,6 +112,7 @@ export function Desktop({ user, role, onLogout }: { user: string; role: Role; on
 
   return (
     <SessionProvider value={{ user, role }}>
+    <NavigationProvider value={{ navigate, pendingFocus, consumeFocus }}>
     <div className="absolute inset-0" onPointerDown={() => setSelectedIcon(null)}>
       {/* wallpaper */}
       <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
@@ -172,6 +187,7 @@ export function Desktop({ user, role, onLogout }: { user: string; role: Role; on
         onLogout={onLogout}
       />
     </div>
+    </NavigationProvider>
     </SessionProvider>
   );
 }

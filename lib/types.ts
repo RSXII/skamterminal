@@ -91,14 +91,20 @@ export interface Listing {
   kind: ListingKind;
   title: string;
   address: string;
-  district: string;
   price: number;
   beds: number;
   baths: number;
   sqft: number;
   description: string;
   available: boolean;
+  /** Real district entity id (see Entity.district) — unset until placed on the Field Map. */
+  districtId?: string;
+  /** Same percentage-of-shared-canvas semantics as Entity.districtHotspot — unset until placed. */
+  districtHotspot?: MapPoint;
 }
+
+/** Fields an admin fills in to create a new listing — district is optional here, the exact pin point is always placed later on the map. */
+export type NewListingInput = Omit<Listing, "id" | "districtHotspot">;
 
 /** A fake website reachable from the in-OS browser. */
 export interface FakeSite {

@@ -1,18 +1,27 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { fetchEntities, updateDistrictBoundary } from "@/lib/entities";
-import type { Entity, MapPoint } from "@/lib/types";
+import { fetchListings, placeListingOnMap } from "@/lib/data";
+import type { Entity, Listing, MapPoint } from "@/lib/types";
 import { Rich } from "@/components/entity/Rich";
 import { DossierPanel } from "@/components/entity/DossierPanel";
 import { useSession } from "@/lib/session";
+import { useNavigation, useAppFocus, type AppFocus } from "@/lib/navigation";
 
 const CITY_ENTITY_ID = "city-overview";
 // The whole city is one shared vector canvas — every hotspot/boundary point
 // is a percentage of this fixed viewBox, never of a separate cropped image.
 const VB = { x: 2730, y: 2730, w: 10922, h: 10922 };
 const CENTER = { x: VB.x + VB.w / 2, y: VB.y + VB.h / 2 };
-const LOCATION_ZOOM_BOOST = 2.3;
+const LOCATION_ZOOM_BOOST = 6;
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 6;
 const PAN_THRESHOLD = 5; // px of pointer movement before a press-drag counts as panning, not a click
@@ -26,7 +35,13 @@ const QUADRANTS = [
   { key: "nw", x: VB.x, y: VB.y, w: TILE_HALF, h: TILE_HALF },
   { key: "ne", x: VB.x + TILE_HALF, y: VB.y, w: TILE_HALF, h: TILE_HALF },
   { key: "sw", x: VB.x, y: VB.y + TILE_HALF, w: TILE_HALF, h: TILE_HALF },
-  { key: "se", x: VB.x + TILE_HALF, y: VB.y + TILE_HALF, w: TILE_HALF, h: TILE_HALF },
+  {
+    key: "se",
+    x: VB.x + TILE_HALF,
+    y: VB.y + TILE_HALF,
+    w: TILE_HALF,
+    h: TILE_HALF,
+  },
 ] as const;
 
 function abs(pct: MapPoint) {
@@ -37,14 +52,59 @@ function polygonBBox(points: MapPoint[]) {
   const pts = points.map(abs);
   const xs = pts.map((p) => p.x);
   const ys = pts.map((p) => p.y);
-  return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+  return {
+    minX: Math.min(...xs),
+    maxX: Math.max(...xs),
+    minY: Math.min(...ys),
+    maxY: Math.max(...ys),
+  };
 }
 
 /** Uniform scale that fits a bbox (with a little padding) inside the full viewBox. */
-function fitScaleFor(bbox: { minX: number; maxX: number; minY: number; maxY: number }) {
+function fitScaleFor(bbox: {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}) {
   const w = (bbox.maxX - bbox.minX) * 1.35;
   const h = (bbox.maxY - bbox.minY) * 1.35;
   return Math.min(VB.w / Math.max(w, 1), VB.h / Math.max(h, 1));
+}
+
+/** A district's own "zoomed to fit" scale — the fixed reference point that LOCATION_ZOOM_BOOST
+ * multiplies onto. Always derived from the district itself, never from whatever the live focus
+ * happens to be, so selecting pin after pin within the same district can't compound the zoom. */
+function districtBaseScale(d: Entity | null | undefined): number {
+  if (!d) return 1; // matches CITY_FOCUS.baseScale
+  if (d.boundary && d.boundary.length >= 3)
+    return fitScaleFor(polygonBBox(d.boundary));
+  if (d.cityHotspot) return 3;
+  return 1;
+}
+
+// Keep in sync with the bottom sheet's `h-[60%]` below — selecting a pin opens it over the
+// lower part of the map, so a plain dead-center focus leaves the pin sitting right under it.
+const SHEET_HEIGHT_FRACTION = 0.6;
+
+/** Focus point for a newly-selected pin, biased down in world space so the pin lands in the
+ * middle of the strip still visible above the bottom sheet instead of behind it. */
+function pinFocusPoint(
+  pinAbs: { x: number; y: number },
+  totalScale: number,
+  viewportSize: { width: number; height: number } | null,
+): { x: number; y: number } {
+  if (!viewportSize || !viewportSize.width || !viewportSize.height)
+    return pinAbs;
+  const frameScale = Math.min(
+    viewportSize.width / VB.w,
+    viewportSize.height / VB.h,
+  );
+  const visibleFraction = 1 - SHEET_HEIGHT_FRACTION;
+  const shiftFraction = 0.5 - visibleFraction / 2; // 0.5 = dead center, where the pin sits today
+  const shiftWorldUnits =
+    (shiftFraction * viewportSize.height) / (frameScale * totalScale);
+  return { x: pinAbs.x, y: pinAbs.y + shiftWorldUnits };
 }
 
 /** Screen (client) coords -> absolute map-unit coords, given a specific pan/zoom state. */
@@ -54,7 +114,7 @@ function invertScreen(
   rect: { left: number; top: number; width: number; height: number },
   totalScale: number,
   matrixE: number,
-  matrixF: number
+  matrixF: number,
 ) {
   const frameScale = Math.min(rect.width / VB.w, rect.height / VB.h);
   const renderedW = VB.w * frameScale;
@@ -63,24 +123,77 @@ function invertScreen(
   const offsetY = (rect.height - renderedH) / 2;
   const outerX = VB.x + (clientX - rect.left - offsetX) / frameScale;
   const outerY = VB.y + (clientY - rect.top - offsetY) / frameScale;
-  return { x: (outerX - matrixE) / totalScale, y: (outerY - matrixF) / totalScale };
+  return {
+    x: (outerX - matrixE) / totalScale,
+    y: (outerY - matrixF) / totalScale,
+  };
 }
 
 /** Which detail-tile quadrants (if any) currently overlap the visible viewport. */
 function activeTilesFor(
   totalScale: number,
   focusPoint: { x: number; y: number },
-  viewportRect: { width: number; height: number } | null
+  viewportRect: { width: number; height: number } | null,
 ): (typeof QUADRANTS)[number]["key"][] {
-  if (totalScale < TILE_ZOOM_THRESHOLD || !viewportRect || !viewportRect.width || !viewportRect.height) return [];
-  const frameScale = Math.min(viewportRect.width / VB.w, viewportRect.height / VB.h);
+  if (
+    totalScale < TILE_ZOOM_THRESHOLD ||
+    !viewportRect ||
+    !viewportRect.width ||
+    !viewportRect.height
+  )
+    return [];
+  const frameScale = Math.min(
+    viewportRect.width / VB.w,
+    viewportRect.height / VB.h,
+  );
   const halfWorldW = viewportRect.width / (frameScale * totalScale) / 2;
   const halfWorldH = viewportRect.height / (frameScale * totalScale) / 2;
   const minX = focusPoint.x - halfWorldW;
   const maxX = focusPoint.x + halfWorldW;
   const minY = focusPoint.y - halfWorldH;
   const maxY = focusPoint.y + halfWorldH;
-  return QUADRANTS.filter((q) => minX < q.x + q.w && maxX > q.x && minY < q.y + q.h && maxY > q.y).map((q) => q.key);
+  return QUADRANTS.filter(
+    (q) => minX < q.x + q.w && maxX > q.x && minY < q.y + q.h && maxY > q.y,
+  ).map((q) => q.key);
+}
+
+/** Presents a Listing through the same DossierPanel used for every other map pin — see AGENTS notes in the plan. */
+function listingToDossierEntity(l: Listing): Entity {
+  return {
+    id: l.id,
+    kind: "location",
+    fileNo: `GKR-${l.id.slice(0, 4).toUpperCase()}`,
+    stamp: !l.available
+      ? "LET AGREED"
+      : l.kind === "apartment"
+        ? "FOR LET"
+        : "FOR SALE",
+    colors: {
+      rule: "#e8a33d",
+      accent: "#ffd58a",
+      stripe: "#57401d",
+      stampColor: "#e8a33d",
+    },
+    name: l.title,
+    epithet: l.address,
+    images: [],
+    stats: [
+      { label: "Type", value: l.kind === "house" ? "House" : "Apartment" },
+      {
+        label: "Price",
+        value:
+          l.kind === "apartment"
+            ? `${l.price.toLocaleString("en-US")} gl/mo`
+            : `${l.price.toLocaleString("en-US")} gl`,
+      },
+      { label: "Bedrooms", value: l.beds === 0 ? "Studio" : String(l.beds) },
+      { label: "Baths", value: String(l.baths) },
+      { label: "Area", value: `${l.sqft.toLocaleString()} sqft` },
+      { label: "Status", value: l.available ? "Available" : "Let Agreed" },
+    ],
+    sections: [{ heading: "Description", paragraphs: [l.description] }],
+    quote: null,
+  };
 }
 
 interface Focus {
@@ -92,23 +205,38 @@ const CITY_FOCUS: Focus = { point: CENTER, baseScale: 1 };
 
 export function MapApp() {
   const { role } = useSession();
+  const { navigate } = useNavigation();
+  const [incomingFocus, consumeIncomingFocus] =
+    useAppFocus<Extract<AppFocus, { app: "map" }>>("map");
   const [entities, setEntities] = useState<Entity[]>([]);
-  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [listings, setListings] = useState<Listing[]>([]);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">(
+    "loading",
+  );
   const [districtId, setDistrictId] = useState<string | null>(null);
   const [locationId, setLocationId] = useState<string | null>(null);
-  const [hoveredDistrictId, setHoveredDistrictId] = useState<string | null>(null);
-  const [hoveredLocationId, setHoveredLocationId] = useState<string | null>(null);
+  const [hoveredDistrictId, setHoveredDistrictId] = useState<string | null>(
+    null,
+  );
+  const [hoveredLocationId, setHoveredLocationId] = useState<string | null>(
+    null,
+  );
   const [focus, setFocus] = useState<Focus>(CITY_FOCUS);
   const [zoomMultiplier, setZoomMultiplier] = useState(1);
   const [editMode, setEditMode] = useState(false);
   const [target, setTarget] = useState("");
   const [placed, setPlaced] = useState<Record<string, MapPoint>>({});
-  const [editingBoundaryId, setEditingBoundaryId] = useState<string | null>(null);
+  const [editingBoundaryId, setEditingBoundaryId] = useState<string | null>(
+    null,
+  );
   const [boundaryDraft, setBoundaryDraft] = useState<MapPoint[] | null>(null);
   const [savingBoundary, setSavingBoundary] = useState(false);
   const [isDraggingMap, setIsDraggingMap] = useState(false);
   const [isWheelZooming, setIsWheelZooming] = useState(false);
-  const [viewportSize, setViewportSize] = useState<{ width: number; height: number } | null>(null);
+  const [viewportSize, setViewportSize] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
   const draggingVertex = useRef<number | null>(null);
   // Mirrors `focus` so the wheel handler (a native listener, attached once — see the effect
   // below) can always read the current value instead of a stale closure from attach-time.
@@ -132,9 +260,10 @@ export function MapApp() {
   const gRef = useRef<SVGGElement>(null);
 
   useEffect(() => {
-    fetchEntities()
-      .then((list) => {
-        setEntities(list);
+    Promise.all([fetchEntities(), fetchListings()])
+      .then(([entityList, listingList]) => {
+        setEntities(entityList);
+        setListings(listingList);
         setStatus("ready");
       })
       .catch((err) => {
@@ -149,7 +278,8 @@ export function MapApp() {
   useEffect(() => {
     const svg = svgRef.current;
     if (!svg) return;
-    const update = () => setViewportSize({ width: svg.clientWidth, height: svg.clientHeight });
+    const update = () =>
+      setViewportSize({ width: svg.clientWidth, height: svg.clientHeight });
     update();
     const observer = new ResizeObserver(update);
     observer.observe(svg);
@@ -160,12 +290,47 @@ export function MapApp() {
   }, [status]);
 
   const cityEntity = entities.find((e) => e.id === CITY_ENTITY_ID);
-  const districts = useMemo(() => entities.filter((e) => e.kind === "district"), [entities]);
-  const locations = useMemo(() => entities.filter((e) => e.kind === "location"), [entities]);
+  const districts = useMemo(
+    () => entities.filter((e) => e.kind === "district"),
+    [entities],
+  );
+  const locations = useMemo(
+    () => entities.filter((e) => e.kind === "location"),
+    [entities],
+  );
   const selectedDistrict = districts.find((d) => d.id === districtId) ?? null;
-  const districtLocations = locations.filter((l) => l.district === districtId);
+  const districtLocations = useMemo(
+    () => locations.filter((l) => l.district === districtId),
+    [locations, districtId],
+  );
+  const districtListings = useMemo(
+    () =>
+      listings.filter((l) => l.districtId === districtId && l.districtHotspot),
+    [listings, districtId],
+  );
+  // Unified for pin rendering / zoom-to lookups — a listing pin behaves exactly like any other
+  // location pin once placed, it just also carries a Gilded Key listing behind it.
+  const districtPins = useMemo(
+    () => [
+      ...districtLocations
+        .filter((l) => l.districtHotspot)
+        .map((l) => ({ id: l.id, hotspot: l.districtHotspot! })),
+      ...districtListings.map((l) => ({
+        id: l.id,
+        hotspot: l.districtHotspot!,
+      })),
+    ],
+    [districtLocations, districtListings],
+  );
+  const unplacedListings = districtId
+    ? listings.filter(
+        (l) =>
+          !l.districtHotspot && (!l.districtId || l.districtId === districtId),
+      )
+    : [];
   const selectedLocation = locations.find((l) => l.id === locationId) ?? null;
-  const sheetOpen = !!selectedLocation;
+  const selectedListing = listings.find((l) => l.id === locationId) ?? null;
+  const sheetOpen = !!selectedLocation || !!selectedListing;
 
   const goCity = useCallback(() => {
     setDistrictId(null);
@@ -189,15 +354,21 @@ export function MapApp() {
       setZoomMultiplier(1);
       if (d.boundary && d.boundary.length >= 3) {
         const bbox = polygonBBox(d.boundary);
-        setFocus({ point: { x: (bbox.minX + bbox.maxX) / 2, y: (bbox.minY + bbox.maxY) / 2 }, baseScale: fitScaleFor(bbox) });
+        setFocus({
+          point: {
+            x: (bbox.minX + bbox.maxX) / 2,
+            y: (bbox.minY + bbox.maxY) / 2,
+          },
+          baseScale: districtBaseScale(d),
+        });
       } else if (d.cityHotspot) {
         const p = abs(d.cityHotspot);
-        setFocus({ point: p, baseScale: 3 });
+        setFocus({ point: p, baseScale: districtBaseScale(d) });
       } else {
         setFocus(CITY_FOCUS);
       }
     },
-    [districts]
+    [districts],
   );
 
   const selectLocation = useCallback(
@@ -208,14 +379,54 @@ export function MapApp() {
         if (districtId) focusDistrict(districtId);
         return;
       }
-      const l = districtLocations.find((x) => x.id === id);
+      const pin = districtPins.find((p) => p.id === id);
       setLocationId(id);
       setZoomMultiplier(1);
-      if (l?.districtHotspot) {
-        setFocus((f) => ({ point: abs(l.districtHotspot!), baseScale: f.baseScale * LOCATION_ZOOM_BOOST }));
+      if (pin) {
+        // Always boost off the district's own base scale, never the live focus.baseScale —
+        // that may already be pin-boosted from a previous selection, which would otherwise
+        // compound every time you click a different pin without leaving the district first.
+        const d = districts.find((x) => x.id === districtId);
+        const baseScale = districtBaseScale(d) * LOCATION_ZOOM_BOOST;
+        setFocus({
+          point: pinFocusPoint(abs(pin.hotspot), baseScale, viewportSize),
+          baseScale,
+        });
       }
     },
-    [locationId, districtId, districtLocations, focusDistrict]
+    [
+      locationId,
+      districtId,
+      districtPins,
+      districts,
+      focusDistrict,
+      viewportSize,
+    ],
+  );
+
+  /** Cross-app deep link landing: drill into a pin's district and zoom to it, whether it's a real Entity location or a Gilded Key listing. */
+  const goToLocation = useCallback(
+    (id: string) => {
+      const loc = locations.find((l) => l.id === id);
+      const listing = listings.find((l) => l.id === id);
+      const targetDistrictId = loc?.district ?? listing?.districtId;
+      const hotspot = loc?.districtHotspot ?? listing?.districtHotspot;
+      if (!targetDistrictId || !hotspot) return;
+      const d = districts.find((x) => x.id === targetDistrictId);
+      if (!d) return;
+      setEditMode(false);
+      setTarget("");
+      setHoveredLocationId(null);
+      setDistrictId(d.id);
+      setZoomMultiplier(1);
+      const baseScale = districtBaseScale(d) * LOCATION_ZOOM_BOOST;
+      setFocus({
+        point: pinFocusPoint(abs(hotspot), baseScale, viewportSize),
+        baseScale,
+      });
+      setLocationId(id);
+    },
+    [locations, listings, districts, viewportSize],
   );
 
   const totalScale = focus.baseScale * zoomMultiplier;
@@ -227,15 +438,27 @@ export function MapApp() {
   const activeTileKeys = activeTilesFor(totalScale, focus.point, viewportSize);
 
   function zoomBy(factor: number) {
-    setZoomMultiplier((z) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * factor)));
+    setZoomMultiplier((z) =>
+      Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * factor)),
+    );
   }
 
   /** Screen click -> {x%, y%} in the shared map space, inverting the current pan/zoom. */
   function screenToPct(clientX: number, clientY: number): MapPoint | null {
     const svg = svgRef.current;
     if (!svg) return null;
-    const world = invertScreen(clientX, clientY, svg.getBoundingClientRect(), totalScale, matrixE, matrixF);
-    return { x: Math.round(((world.x - VB.x) / VB.w) * 1000) / 10, y: Math.round(((world.y - VB.y) / VB.h) * 1000) / 10 };
+    const world = invertScreen(
+      clientX,
+      clientY,
+      svg.getBoundingClientRect(),
+      totalScale,
+      matrixE,
+      matrixF,
+    );
+    return {
+      x: Math.round(((world.x - VB.x) / VB.w) * 1000) / 10,
+      y: Math.round(((world.y - VB.y) / VB.h) * 1000) / 10,
+    };
   }
 
   // Cursor-anchored scroll-wheel zoom: keeps the map point under the cursor fixed on screen
@@ -253,14 +476,24 @@ export function MapApp() {
       const rect = svg!.getBoundingClientRect();
       setIsWheelZooming(true);
       if (wheelZoomTimeout.current) clearTimeout(wheelZoomTimeout.current);
-      wheelZoomTimeout.current = setTimeout(() => setIsWheelZooming(false), 150);
+      wheelZoomTimeout.current = setTimeout(
+        () => setIsWheelZooming(false),
+        150,
+      );
       const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
       setZoomMultiplier((z) => {
         const f = focusRef.current;
         const oldTotalScale = f.baseScale * z;
         const oldMatrixE = CENTER.x - oldTotalScale * f.point.x;
         const oldMatrixF = CENTER.y - oldTotalScale * f.point.y;
-        const cursorWorld = invertScreen(e.clientX, e.clientY, rect, oldTotalScale, oldMatrixE, oldMatrixF);
+        const cursorWorld = invertScreen(
+          e.clientX,
+          e.clientY,
+          rect,
+          oldTotalScale,
+          oldMatrixE,
+          oldMatrixF,
+        );
         const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * factor));
         const newTotalScale = f.baseScale * newZoom;
         const ratio = oldTotalScale / newTotalScale;
@@ -283,13 +516,25 @@ export function MapApp() {
     // flips to "ready", so an empty dep array would attach to nothing.
   }, [status]);
 
+  useEffect(() => {
+    if (!incomingFocus || status !== "ready") return;
+    goToLocation(incomingFocus.locationId);
+    consumeIncomingFocus();
+  }, [incomingFocus, status, goToLocation, consumeIncomingFocus]);
+
   const startEditingBoundary = useCallback((d: Entity) => {
     setEditingBoundaryId(d.id);
     setBoundaryDraft(d.boundary ? d.boundary.map((p) => ({ ...p })) : []);
     setTarget("");
     if (d.boundary && d.boundary.length >= 3) {
       const bbox = polygonBBox(d.boundary);
-      setFocus({ point: { x: (bbox.minX + bbox.maxX) / 2, y: (bbox.minY + bbox.maxY) / 2 }, baseScale: fitScaleFor(bbox) });
+      setFocus({
+        point: {
+          x: (bbox.minX + bbox.maxX) / 2,
+          y: (bbox.minY + bbox.maxY) / 2,
+        },
+        baseScale: fitScaleFor(bbox),
+      });
       setZoomMultiplier(1);
     }
   }, []);
@@ -301,23 +546,32 @@ export function MapApp() {
   }
 
   async function saveBoundaryEdit() {
-    if (!editingBoundaryId || !boundaryDraft || boundaryDraft.length < 3) return;
+    if (!editingBoundaryId || !boundaryDraft || boundaryDraft.length < 3)
+      return;
     setSavingBoundary(true);
     try {
       await updateDistrictBoundary(editingBoundaryId, boundaryDraft);
-      setEntities((prev) => prev.map((e) => (e.id === editingBoundaryId ? { ...e, boundary: boundaryDraft } : e)));
+      setEntities((prev) =>
+        prev.map((e) =>
+          e.id === editingBoundaryId ? { ...e, boundary: boundaryDraft } : e,
+        ),
+      );
       setEditingBoundaryId(null);
       setBoundaryDraft(null);
     } catch (err) {
       console.error("Failed to save boundary:", err);
-      alert("Save failed — check that Firestore write access is currently open.");
+      alert(
+        "Save failed — check that Firestore write access is currently open.",
+      );
     } finally {
       setSavingBoundary(false);
     }
   }
 
   function deleteVertex(index: number) {
-    setBoundaryDraft((prev) => (prev && prev.length > 3 ? prev.filter((_, i) => i !== index) : prev));
+    setBoundaryDraft((prev) =>
+      prev && prev.length > 3 ? prev.filter((_, i) => i !== index) : prev,
+    );
   }
 
   function insertVertexAt(index: number, point: MapPoint) {
@@ -350,11 +604,14 @@ export function MapApp() {
       const pct = screenToPct(e.clientX, e.clientY);
       if (!pct) return;
       const idx = draggingVertex.current;
-      setBoundaryDraft((prev) => (prev ? prev.map((p, i) => (i === idx ? pct : p)) : prev));
+      setBoundaryDraft((prev) =>
+        prev ? prev.map((p, i) => (i === idx ? pct : p)) : prev,
+      );
       return;
     }
     if (!panRef.current) return;
-    const { startClientX, startClientY, startFocusX, startFocusY } = panRef.current;
+    const { startClientX, startClientY, startFocusX, startFocusY } =
+      panRef.current;
     const dx = e.clientX - startClientX;
     const dy = e.clientY - startClientY;
     if (!panRef.current.moved) {
@@ -415,7 +672,12 @@ export function MapApp() {
       {/* breadcrumb */}
       <div className="flex items-center justify-between gap-3 border-b border-line bg-panel/60 px-4 py-2">
         <div className="flex items-center gap-2 text-[11px] tracking-[0.2em] uppercase">
-          <button onClick={goCity} className={districtId ? "text-gold-dim hover:text-gold" : "text-gold"}>
+          <button
+            onClick={goCity}
+            className={
+              districtId ? "text-gold-dim hover:text-gold" : "text-gold"
+            }
+          >
             Fate City
           </button>
           {selectedDistrict && (
@@ -423,7 +685,11 @@ export function MapApp() {
               <span className="text-gold-faint">/</span>
               <button
                 onClick={() => focusDistrict(selectedDistrict.id)}
-                className={selectedLocation ? "text-gold-dim hover:text-gold" : "text-gold"}
+                className={
+                  selectedLocation
+                    ? "text-gold-dim hover:text-gold"
+                    : "text-gold"
+                }
               >
                 <Rich html={selectedDistrict.name} />
               </button>
@@ -456,48 +722,91 @@ export function MapApp() {
         {/* sidebar */}
         <div className="flex w-52 shrink-0 flex-col overflow-y-auto border-r border-line bg-panel/60">
           {status === "loading" && (
-            <div className="p-3 text-[10px] tracking-[0.15em] text-gold-faint">LOADING MAP DATA…</div>
+            <div className="p-3 text-[10px] tracking-[0.15em] text-gold-faint">
+              LOADING MAP DATA…
+            </div>
           )}
           {status === "error" && (
             <div className="p-3 text-[10px] leading-relaxed tracking-[0.1em] text-danger/80">
               CONNECTION FAILED — could not reach the shared database.
             </div>
           )}
-          {!districtId
-            ? districts.map((d) => (
+          {!districtId ? (
+            districts.map((d) => (
+              <button
+                key={d.id}
+                onClick={() => focusDistrict(d.id)}
+                onMouseEnter={() => setHoveredDistrictId(d.id)}
+                onMouseLeave={() =>
+                  setHoveredDistrictId((cur) => (cur === d.id ? null : cur))
+                }
+                className={`border-b border-line/50 px-3 py-2.5 text-left text-xs transition-colors ${
+                  hoveredDistrictId === d.id
+                    ? "bg-panel-2 text-gold"
+                    : "text-gold-dim hover:bg-panel hover:text-gold"
+                }`}
+              >
+                <Rich html={d.name} className="block truncate font-semibold" />
+                <span className="text-[9px] tracking-[0.1em] text-gold-faint uppercase">
+                  {d.fileNo}
+                </span>
+              </button>
+            ))
+          ) : districtLocations.length > 0 || districtListings.length > 0 ? (
+            <>
+              {districtLocations.map((l) => (
                 <button
-                  key={d.id}
-                  onClick={() => focusDistrict(d.id)}
-                  onMouseEnter={() => setHoveredDistrictId(d.id)}
-                  onMouseLeave={() => setHoveredDistrictId((cur) => (cur === d.id ? null : cur))}
+                  key={l.id}
+                  onClick={() => selectLocation(l.id)}
+                  onMouseEnter={() => setHoveredLocationId(l.id)}
+                  onMouseLeave={() =>
+                    setHoveredLocationId((cur) => (cur === l.id ? null : cur))
+                  }
                   className={`border-b border-line/50 px-3 py-2.5 text-left text-xs transition-colors ${
-                    hoveredDistrictId === d.id ? "bg-panel-2 text-gold" : "text-gold-dim hover:bg-panel hover:text-gold"
+                    locationId === l.id
+                      ? "bg-panel-2 text-gold"
+                      : "text-gold-dim hover:bg-panel hover:text-gold"
                   }`}
                 >
-                  <Rich html={d.name} className="block truncate font-semibold" />
-                  <span className="text-[9px] tracking-[0.1em] text-gold-faint uppercase">{d.fileNo}</span>
+                  <Rich
+                    html={l.name}
+                    className="block truncate font-semibold"
+                  />
+                  <span className="text-[9px] tracking-[0.1em] text-gold-faint uppercase">
+                    {l.fileNo}
+                  </span>
                 </button>
-              ))
-            : districtLocations.length > 0
-              ? districtLocations.map((l) => (
-                  <button
-                    key={l.id}
-                    onClick={() => selectLocation(l.id)}
-                    onMouseEnter={() => setHoveredLocationId(l.id)}
-                    onMouseLeave={() => setHoveredLocationId((cur) => (cur === l.id ? null : cur))}
-                    className={`border-b border-line/50 px-3 py-2.5 text-left text-xs transition-colors ${
-                      locationId === l.id ? "bg-panel-2 text-gold" : "text-gold-dim hover:bg-panel hover:text-gold"
-                    }`}
-                  >
-                    <Rich html={l.name} className="block truncate font-semibold" />
-                    <span className="text-[9px] tracking-[0.1em] text-gold-faint uppercase">{l.fileNo}</span>
-                  </button>
-                ))
-              : status === "ready" && (
-                  <div className="p-3 text-[10px] leading-relaxed tracking-[0.15em] text-gold-faint">
-                    NO KNOWN LOCATIONS ON RECORD
-                  </div>
-                )}
+              ))}
+              {districtListings.map((l) => (
+                <button
+                  key={l.id}
+                  onClick={() => selectLocation(l.id)}
+                  onMouseEnter={() => setHoveredLocationId(l.id)}
+                  onMouseLeave={() =>
+                    setHoveredLocationId((cur) => (cur === l.id ? null : cur))
+                  }
+                  className={`border-b border-line/50 px-3 py-2.5 text-left text-xs transition-colors ${
+                    locationId === l.id
+                      ? "bg-panel-2 text-gold"
+                      : "text-gold-dim hover:bg-panel hover:text-gold"
+                  }`}
+                >
+                  <span className="block truncate font-semibold">
+                    {l.title}
+                  </span>
+                  <span className="text-[9px] tracking-[0.1em] text-gold-faint uppercase">
+                    Gilded Key Listing
+                  </span>
+                </button>
+              ))}
+            </>
+          ) : (
+            status === "ready" && (
+              <div className="p-3 text-[10px] leading-relaxed tracking-[0.15em] text-gold-faint">
+                NO KNOWN LOCATIONS ON RECORD
+              </div>
+            )
+          )}
         </div>
 
         {/* main */}
@@ -518,7 +827,25 @@ export function MapApp() {
                     if (!editMode || !target || editingBoundaryId) return;
                     const pct = screenToPct(e.clientX, e.clientY);
                     if (!pct) return;
-                    setPlaced((prev) => ({ ...prev, [target]: pct }));
+                    if (target.startsWith("listing:")) {
+                      // Live, immediate write — this is localStorage, not the write-locked
+                      // Firestore entities collection, so there's no migration-script dance.
+                      const id = target.slice("listing:".length);
+                      if (districtId) {
+                        void placeListingOnMap(id, districtId, pct).then(
+                          (updated) => {
+                            setListings((prev) =>
+                              prev.map((l) => (l.id === id ? updated : l)),
+                            );
+                          },
+                        );
+                      }
+                    } else {
+                      const id = target.startsWith("entity:")
+                        ? target.slice("entity:".length)
+                        : target;
+                      setPlaced((prev) => ({ ...prev, [id]: pct }));
+                    }
                     setTarget("");
                   }}
                   onPointerDown={handleMapPointerDown}
@@ -530,85 +857,128 @@ export function MapApp() {
                     ref={gRef}
                     style={{
                       transform,
-                      transition: isDraggingMap || isWheelZooming ? "none" : "transform 0.6s cubic-bezier(0.2,0.7,0.3,1)",
+                      transition:
+                        isDraggingMap || isWheelZooming
+                          ? "none"
+                          : "transform 0.6s cubic-bezier(0.2,0.7,0.3,1)",
                     }}
                   >
-                    <image href={cityEntity.mapImageUrl} x={VB.x} y={VB.y} width={VB.w} height={VB.h} />
+                    <image
+                      href={cityEntity.mapImageUrl}
+                      x={VB.x}
+                      y={VB.y}
+                      width={VB.w}
+                      height={VB.h}
+                    />
 
                     {/* 2x-detail tiles, layered over the base image, loaded in only for whichever
                         quadrant(s) are on screen once zoomed in close enough to need them. */}
                     {cityEntity.mapTiles &&
-                      QUADRANTS.filter((q) => activeTileKeys.includes(q.key)).map((q) => (
-                        <image key={q.key} href={cityEntity.mapTiles![q.key]} x={q.x} y={q.y} width={q.w} height={q.h} />
+                      QUADRANTS.filter((q) =>
+                        activeTileKeys.includes(q.key),
+                      ).map((q) => (
+                        <image
+                          key={q.key}
+                          href={cityEntity.mapTiles![q.key]}
+                          x={q.x}
+                          y={q.y}
+                          width={q.w}
+                          height={q.h}
+                        />
                       ))}
 
                     {districts.map((d) => {
-                        const isEditing = editingBoundaryId === d.id;
-                        const isSelected = districtId === d.id;
-                        // At city level every district's outline can be hovered/clicked; once drilled
-                        // into one, only its own outline stays on screen as a static bounds indicator.
-                        if (districtId && !isSelected && !isEditing) return null;
-                        const boundary = isEditing ? boundaryDraft : d.boundary;
-                        if (!boundary || boundary.length < 3) return null;
-                        const hovered = !districtId && hoveredDistrictId === d.id;
-                        const lit = hovered || isSelected;
-                        const pts = boundary.map((p) => {
+                      const isEditing = editingBoundaryId === d.id;
+                      const isSelected = districtId === d.id;
+                      // At city level every district's outline can be hovered/clicked; once drilled
+                      // into one, only its own outline stays on screen as a static bounds indicator.
+                      if (districtId && !isSelected && !isEditing) return null;
+                      const boundary = isEditing ? boundaryDraft : d.boundary;
+                      if (!boundary || boundary.length < 3) return null;
+                      const hovered = !districtId && hoveredDistrictId === d.id;
+                      const lit = hovered || isSelected;
+                      const pts = boundary
+                        .map((p) => {
                           const a = abs(p);
                           return `${a.x},${a.y}`;
-                        }).join(" ");
-                        const glowColor = isEditing ? "#5fd0e8" : "#ffd58a";
-                        return (
-                          <g key={d.id}>
-                            {/* Cheap glow: a wide, low-opacity duplicate stroke instead of a
+                        })
+                        .join(" ");
+                      const glowColor = isEditing ? "#5fd0e8" : "#ffd58a";
+                      return (
+                        <g key={d.id}>
+                          {/* Cheap glow: a wide, low-opacity duplicate stroke instead of a
                                 drop-shadow filter — with ~6000 map elements underneath, a blurred
                                 filter recomputed every paint (e.g. while panning) was visibly janky. */}
-                            {(isEditing || lit) && (
-                              <polygon
-                                points={pts}
-                                fill="none"
-                                stroke={glowColor}
-                                strokeOpacity={0.35}
-                                strokeWidth={14}
-                                vectorEffect="non-scaling-stroke"
-                                style={{ pointerEvents: "none" }}
-                              />
-                            )}
+                          {(isEditing || lit) && (
                             <polygon
                               points={pts}
-                              fill={isEditing ? "rgba(95,208,232,0.10)" : lit ? "rgba(232,163,61,0.10)" : "rgba(0,0,0,0)"}
-                              stroke={isEditing ? "#5fd0e8" : lit ? "#ffd58a" : "transparent"}
-                              strokeWidth={3}
+                              fill="none"
+                              stroke={glowColor}
+                              strokeOpacity={0.35}
+                              strokeWidth={14}
                               vectorEffect="non-scaling-stroke"
-                              style={{
-                                cursor: districtId ? "default" : "pointer",
-                                pointerEvents: districtId ? "none" : "auto",
-                                transition: isEditing ? undefined : "fill 0.15s, stroke 0.15s",
-                              }}
-                              onMouseEnter={() => setHoveredDistrictId(d.id)}
-                              onMouseLeave={() => setHoveredDistrictId((cur) => (cur === d.id ? null : cur))}
-                              onClick={(e) => {
-                                if (suppressNextClickRef.current) {
-                                  suppressNextClickRef.current = false;
-                                  return;
-                                }
-                                if (editMode) {
-                                  e.stopPropagation();
-                                  startEditingBoundary(d);
-                                } else {
-                                  focusDistrict(d.id);
-                                }
-                              }}
+                              style={{ pointerEvents: "none" }}
                             />
-                          </g>
-                        );
-                      })}
+                          )}
+                          <polygon
+                            points={pts}
+                            fill={
+                              isEditing
+                                ? "rgba(95,208,232,0.10)"
+                                : lit
+                                  ? "rgba(232,163,61,0.10)"
+                                  : "rgba(0,0,0,0)"
+                            }
+                            stroke={
+                              isEditing
+                                ? "#5fd0e8"
+                                : lit
+                                  ? "#ffd58a"
+                                  : "transparent"
+                            }
+                            strokeWidth={3}
+                            vectorEffect="non-scaling-stroke"
+                            style={{
+                              cursor: districtId ? "default" : "pointer",
+                              pointerEvents: districtId ? "none" : "auto",
+                              transition: isEditing
+                                ? undefined
+                                : "fill 0.15s, stroke 0.15s",
+                            }}
+                            onMouseEnter={() => setHoveredDistrictId(d.id)}
+                            onMouseLeave={() =>
+                              setHoveredDistrictId((cur) =>
+                                cur === d.id ? null : cur,
+                              )
+                            }
+                            onClick={(e) => {
+                              if (suppressNextClickRef.current) {
+                                suppressNextClickRef.current = false;
+                                return;
+                              }
+                              if (editMode) {
+                                e.stopPropagation();
+                                startEditingBoundary(d);
+                              } else {
+                                focusDistrict(d.id);
+                              }
+                            }}
+                          />
+                        </g>
+                      );
+                    })}
 
                     {editingBoundaryId &&
                       boundaryDraft &&
                       boundaryDraft.map((p, i) => {
                         const a = abs(p);
-                        const next = abs(boundaryDraft[(i + 1) % boundaryDraft.length]);
-                        const mid = { x: (a.x + next.x) / 2, y: (a.y + next.y) / 2 };
+                        const next = abs(
+                          boundaryDraft[(i + 1) % boundaryDraft.length],
+                        );
+                        const mid = {
+                          x: (a.x + next.x) / 2,
+                          y: (a.y + next.y) / 2,
+                        };
                         const r = (PIN_BASE_R * 0.7) / totalScale;
                         const midR = (PIN_BASE_R * 0.45) / totalScale;
                         // Visible markers stay small so they don't clutter the shape, but a mouse
@@ -627,8 +997,14 @@ export function MapApp() {
                               style={{ cursor: "copy" }}
                               onPointerDown={(e) => {
                                 e.stopPropagation();
-                                safeCapture(e.target as SVGElement, e.pointerId);
-                                insertVertexAt(i + 1, screenToPct(e.clientX, e.clientY) ?? p);
+                                safeCapture(
+                                  e.target as SVGElement,
+                                  e.pointerId,
+                                );
+                                insertVertexAt(
+                                  i + 1,
+                                  screenToPct(e.clientX, e.clientY) ?? p,
+                                );
                               }}
                             />
                             <circle
@@ -649,7 +1025,10 @@ export function MapApp() {
                               style={{ cursor: "grab" }}
                               onPointerDown={(e) => {
                                 e.stopPropagation();
-                                safeCapture(e.target as SVGElement, e.pointerId);
+                                safeCapture(
+                                  e.target as SVGElement,
+                                  e.pointerId,
+                                );
                                 draggingVertex.current = i;
                               }}
                               onDoubleClick={(e) => {
@@ -673,14 +1052,13 @@ export function MapApp() {
                       })}
 
                     {districtId &&
-                      districtLocations.map((l) => {
-                        if (!l.districtHotspot) return null;
-                        const p = abs(l.districtHotspot);
-                        const active = l.id === locationId;
+                      districtPins.map(({ id, hotspot }) => {
+                        const p = abs(hotspot);
+                        const active = id === locationId;
                         const r = PIN_BASE_R / totalScale;
                         return (
                           <circle
-                            key={l.id}
+                            key={id}
                             cx={p.x}
                             cy={p.y}
                             r={r}
@@ -692,14 +1070,16 @@ export function MapApp() {
                               cursor: "pointer",
                               // Glow only the active pin — a permanent blur filter on every pin in a
                               // district (some have a dozen+) was a needless per-pin paint cost.
-                              filter: active ? "drop-shadow(0 0 6px rgba(232,163,61,0.8))" : "none",
+                              filter: active
+                                ? "drop-shadow(0 0 6px rgba(232,163,61,0.8))"
+                                : "none",
                             }}
                             onClick={() => {
                               if (suppressNextClickRef.current) {
                                 suppressNextClickRef.current = false;
                                 return;
                               }
-                              selectLocation(l.id);
+                              selectLocation(id);
                             }}
                           />
                         );
@@ -709,14 +1089,27 @@ export function MapApp() {
                       const p = abs(pt);
                       const r = PIN_BASE_R / totalScale;
                       return (
-                        <circle key={id} cx={p.x} cy={p.y} r={r} fill="#5fd0e84d" stroke="#5fd0e8" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+                        <circle
+                          key={id}
+                          cx={p.x}
+                          cy={p.y}
+                          r={r}
+                          fill="#5fd0e84d"
+                          stroke="#5fd0e8"
+                          strokeWidth={2}
+                          vectorEffect="non-scaling-stroke"
+                        />
                       );
                     })}
 
                     {hoveredLocationId &&
-                      districtLocations.find((l) => l.id === hoveredLocationId)?.districtHotspot &&
+                      districtPins.find((p) => p.id === hoveredLocationId) &&
                       (() => {
-                        const p = abs(districtLocations.find((l) => l.id === hoveredLocationId)!.districtHotspot!);
+                        const p = abs(
+                          districtPins.find(
+                            (pin) => pin.id === hoveredLocationId,
+                          )!.hotspot,
+                        );
                         const r = (PIN_BASE_R * 1.8) / totalScale;
                         return (
                           <circle
@@ -741,7 +1134,12 @@ export function MapApp() {
                     aria-label="Zoom in"
                     className="flex h-7 w-7 items-center justify-center border-b border-line text-gold-dim hover:bg-panel-2 hover:text-gold"
                   >
-                    <svg viewBox="0 0 10 10" className="h-3 w-3" stroke="currentColor" strokeWidth="1.5">
+                    <svg
+                      viewBox="0 0 10 10"
+                      className="h-3 w-3"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                    >
                       <path d="M5 1 v8 M1 5 h8" />
                     </svg>
                   </button>
@@ -750,7 +1148,12 @@ export function MapApp() {
                     aria-label="Zoom out"
                     className="flex h-7 w-7 items-center justify-center text-gold-dim hover:bg-panel-2 hover:text-gold"
                   >
-                    <svg viewBox="0 0 10 10" className="h-3 w-3" stroke="currentColor" strokeWidth="1.5">
+                    <svg
+                      viewBox="0 0 10 10"
+                      className="h-3 w-3"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                    >
                       <path d="M1 5 h8" />
                     </svg>
                   </button>
@@ -760,7 +1163,9 @@ export function MapApp() {
                 <div
                   onClick={() => selectLocation(locationId!)}
                   className={`absolute inset-0 bg-[#030503] transition-opacity duration-400 ${
-                    sheetOpen ? "pointer-events-auto opacity-55" : "pointer-events-none opacity-0"
+                    sheetOpen
+                      ? "pointer-events-auto opacity-55"
+                      : "pointer-events-none opacity-0"
                   }`}
                 />
                 <div
@@ -768,18 +1173,45 @@ export function MapApp() {
                     sheetOpen ? "h-[60%]" : "h-0"
                   }`}
                 >
-                  {selectedLocation && (
+                  {(selectedLocation || selectedListing) && (
                     <div className="relative h-full overflow-y-auto">
                       <button
-                        onClick={() => selectLocation(selectedLocation.id)}
+                        onClick={() => selectLocation(locationId!)}
                         className="absolute top-2 right-2 z-10 flex h-6 w-6 items-center justify-center border border-line text-gold-dim hover:border-gold hover:text-gold"
                         aria-label="Close"
                       >
-                        <svg viewBox="0 0 10 10" className="h-2.5 w-2.5" stroke="currentColor" strokeWidth="1.5">
+                        <svg
+                          viewBox="0 0 10 10"
+                          className="h-2.5 w-2.5"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                        >
                           <path d="M2 2 l6 6 M8 2 l-6 6" />
                         </svg>
                       </button>
-                      <DossierPanel entity={selectedLocation} />
+                      {selectedLocation ? (
+                        <DossierPanel entity={selectedLocation} />
+                      ) : (
+                        selectedListing && (
+                          <DossierPanel
+                            entity={listingToDossierEntity(selectedListing)}
+                            showNotes={false}
+                            after={
+                              <button
+                                onClick={() =>
+                                  navigate({
+                                    app: "estates",
+                                    listingId: selectedListing.id,
+                                  })
+                                }
+                                className="fc-btn mt-4 text-xs"
+                              >
+                                Open in Gilded Key
+                              </button>
+                            }
+                          />
+                        )
+                      )}
                     </div>
                   )}
                 </div>
@@ -791,15 +1223,21 @@ export function MapApp() {
                     Editing boundary — {boundaryDraft?.length ?? 0} points
                   </span>
                   <span className="text-[10px] text-gold-faint">
-                    drag a point · drag the small dot on an edge to add one · double-click a point to remove it
+                    drag a point · drag the small dot on an edge to add one ·
+                    double-click a point to remove it
                   </span>
                   <div className="ml-auto flex gap-2">
-                    <button onClick={cancelBoundaryEdit} className="fc-btn px-3 py-1 text-[10px]">
+                    <button
+                      onClick={cancelBoundaryEdit}
+                      className="fc-btn px-3 py-1 text-[10px]"
+                    >
                       Cancel
                     </button>
                     <button
                       onClick={saveBoundaryEdit}
-                      disabled={savingBoundary || (boundaryDraft?.length ?? 0) < 3}
+                      disabled={
+                        savingBoundary || (boundaryDraft?.length ?? 0) < 3
+                      }
                       className="fc-btn border-gold bg-gold/15 px-3 py-1 text-[10px] disabled:opacity-50"
                     >
                       {savingBoundary ? "Saving…" : "Save Boundary"}
@@ -811,7 +1249,9 @@ export function MapApp() {
               {editMode && !editingBoundaryId && (
                 <div className="mt-3 shrink-0 border-t border-line pt-3 text-xs">
                   <div className="mb-2 flex items-center gap-2">
-                    <span className="text-[10px] tracking-[0.2em] text-gold-dim uppercase">Placing:</span>
+                    <span className="text-[10px] tracking-[0.2em] text-gold-dim uppercase">
+                      Placing:
+                    </span>
                     <select
                       value={target}
                       onChange={(e) => setTarget(e.target.value)}
@@ -819,13 +1259,24 @@ export function MapApp() {
                     >
                       <option value="">— pick an unplaced entity —</option>
                       {unplaced.map((e) => (
-                        <option key={e.id} value={e.id}>
+                        <option key={e.id} value={`entity:${e.id}`}>
                           {e.id}
                         </option>
                       ))}
+                      {unplacedListings.map((l) => (
+                        <option key={l.id} value={`listing:${l.id}`}>
+                          🏠 {l.title}
+                        </option>
+                      ))}
                     </select>
-                    {unplaced.length === 0 && <span className="text-gold-faint">everything here is already placed</span>}
-                    <span className="ml-auto text-gold-faint">or click an existing district outline to edit its shape</span>
+                    {unplaced.length === 0 && unplacedListings.length === 0 && (
+                      <span className="text-gold-faint">
+                        everything here is already placed
+                      </span>
+                    )}
+                    <span className="ml-auto text-gold-faint">
+                      or click an existing district outline to edit its shape
+                    </span>
                   </div>
                   {Object.keys(placed).length > 0 && (
                     <>
@@ -844,7 +1295,8 @@ export function MapApp() {
               )}
             </>
           ) : (
-            status === "ready" && cityEntity && <DossierPanel entity={cityEntity} showNotes={false} />
+            status === "ready" &&
+            cityEntity && <DossierPanel entity={cityEntity} showNotes={false} />
           )}
         </div>
       </div>
