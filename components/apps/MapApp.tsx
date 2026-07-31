@@ -8,7 +8,11 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { fetchEntities, updateDistrictBoundary } from "@/lib/entities";
+import {
+  fetchEntities,
+  updateDistrictBoundary,
+  updateEntityLocation,
+} from "@/lib/entities";
 import { fetchListings, placeListingOnMap } from "@/lib/data";
 import type { Entity, Listing, MapPoint } from "@/lib/types";
 import { Rich } from "@/components/entity/Rich";
@@ -225,12 +229,9 @@ export function MapApp() {
   const [zoomMultiplier, setZoomMultiplier] = useState(1);
   const [editMode, setEditMode] = useState(false);
   const [target, setTarget] = useState("");
-  // Staged-not-written placements, keyed by entity/listing id — see the click handler below.
-  // A `district` is only carried for a person/org home/HQ pin, whose parent district isn't
-  // preassigned like a location's; districts and locations don't need it echoed back.
-  const [placed, setPlaced] = useState<
-    Record<string, MapPoint & { district?: string }>
-  >({});
+  const [savingPlacementId, setSavingPlacementId] = useState<string | null>(
+    null,
+  );
   const [editingBoundaryId, setEditingBoundaryId] = useState<string | null>(
     null,
   );
@@ -353,13 +354,12 @@ export function MapApp() {
   // preassigned ahead of time, so any of them can be placed while looking at any district.
   // Note: a resident already placed but not yet `locationRevealed` also reads as unplaced here,
   // since fetchEntities() strips its hotspot for every viewer — harmless in practice (a GM
-  // re-placing one just restages the same point), but worth knowing if it ever looks odd.
+  // re-placing one just overwrites the same point), but worth knowing if it ever looks odd.
   const unplacedResidents = districtId
     ? entities.filter(
         (e) =>
           (e.kind === "person" || e.kind === "organization") &&
-          !e.districtHotspot &&
-          !placed[e.id],
+          !e.districtHotspot,
       )
     : [];
   const selectedLocation = locations.find((l) => l.id === locationId) ?? null;
@@ -711,10 +711,31 @@ export function MapApp() {
 
   const unplaced = districtId
     ? [
-        ...districtLocations.filter((l) => !l.districtHotspot && !placed[l.id]),
+        ...districtLocations.filter((l) => !l.districtHotspot),
         ...unplacedResidents,
       ]
-    : districts.filter((d) => !d.cityHotspot && !d.boundary && !placed[d.id]);
+    : districts.filter((d) => !d.cityHotspot && !d.boundary);
+
+  /** Live write-through for wherever the placement tool just dropped a pin — see updateEntityLocation. */
+  async function savePlacement(
+    id: string,
+    fields: Partial<Pick<Entity, "cityHotspot" | "district" | "districtHotspot">>,
+  ) {
+    setSavingPlacementId(id);
+    try {
+      await updateEntityLocation(id, fields);
+      setEntities((prev) =>
+        prev.map((e) => (e.id === id ? { ...e, ...fields } : e)),
+      );
+    } catch (err) {
+      console.error("Failed to save location:", err);
+      alert(
+        "Save failed — check that Firestore write access is currently open.",
+      );
+    } finally {
+      setSavingPlacementId(null);
+    }
+  }
 
   return (
     <div className="flex h-full flex-col bg-ink-2">
@@ -919,16 +940,19 @@ export function MapApp() {
                         ? target.slice("entity:".length)
                         : target;
                       // Only a person/org home/HQ pin needs its district echoed — it has no
-                      // preassigned parent district the way a location already does.
+                      // preassigned parent district the way a location already does. A district
+                      // itself, placed from the city-level view, gets its cityHotspot instead.
                       const targetEntity = entities.find((e) => e.id === id);
                       const isResident =
                         !!districtId &&
                         (targetEntity?.kind === "person" ||
                           targetEntity?.kind === "organization");
-                      setPlaced((prev) => ({
-                        ...prev,
-                        [id]: isResident ? { ...pct, district: districtId! } : pct,
-                      }));
+                      const fields = districtId
+                        ? isResident
+                          ? { district: districtId, districtHotspot: pct }
+                          : { districtHotspot: pct }
+                        : { cityHotspot: pct };
+                      void savePlacement(id, fields);
                     }
                     setTarget("");
                   }}
@@ -1169,23 +1193,6 @@ export function MapApp() {
                         );
                       })}
 
-                    {Object.entries(placed).map(([id, pt]) => {
-                      const p = abs(pt);
-                      const r = PIN_BASE_R / totalScale;
-                      return (
-                        <circle
-                          key={id}
-                          cx={p.x}
-                          cy={p.y}
-                          r={r}
-                          fill="#5fd0e84d"
-                          stroke="#5fd0e8"
-                          strokeWidth={2}
-                          vectorEffect="non-scaling-stroke"
-                        />
-                      );
-                    })}
-
                     {hoveredLocationId &&
                       districtPins.find((p) => p.id === hoveredLocationId) &&
                       (() => {
@@ -1356,7 +1363,8 @@ export function MapApp() {
                     <select
                       value={target}
                       onChange={(e) => setTarget(e.target.value)}
-                      className="fc-input py-1 text-xs"
+                      disabled={!!savingPlacementId}
+                      className="fc-input py-1 text-xs disabled:opacity-50"
                     >
                       <option value="">— pick an unplaced entity —</option>
                       {unplaced.map((e) => (
@@ -1375,28 +1383,20 @@ export function MapApp() {
                         </option>
                       ))}
                     </select>
-                    {unplaced.length === 0 && unplacedListings.length === 0 && (
-                      <span className="text-gold-faint">
-                        everything here is already placed
-                      </span>
+                    {savingPlacementId ? (
+                      <span className="text-gold-dim">Saving…</span>
+                    ) : (
+                      unplaced.length === 0 &&
+                      unplacedListings.length === 0 && (
+                        <span className="text-gold-faint">
+                          everything here is already placed
+                        </span>
+                      )
                     )}
                     <span className="ml-auto text-gold-faint">
                       or click an existing district outline to edit its shape
                     </span>
                   </div>
-                  {Object.keys(placed).length > 0 && (
-                    <>
-                      <div className="mb-1 text-[10px] tracking-[0.2em] text-gold-dim uppercase">
-                        Unsaved this session — copy into a hotspot script
-                      </div>
-                      <textarea
-                        readOnly
-                        value={JSON.stringify(placed, null, 1)}
-                        className="fc-input h-24 w-full resize-none font-[family-name:var(--font-tech)] text-[10px]"
-                        onFocus={(e) => e.currentTarget.select()}
-                      />
-                    </>
-                  )}
                 </div>
               )}
             </>

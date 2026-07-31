@@ -35,3 +35,16 @@ export async function fetchEntities(): Promise<Entity[]> {
 export async function updateDistrictBoundary(districtId: string, boundary: MapPoint[]): Promise<void> {
   await setDoc(doc(db, "entities", districtId), { boundary }, { merge: true });
 }
+
+/**
+ * Writes wherever the Field Map's placement tool just dropped a pin — a district's city-level
+ * fallback point, a location's pin within its (already-assigned) district, or a person/org's
+ * home/HQ pin plus which district it's in. Same write-through pattern as updateDistrictBoundary,
+ * and the same caveat: requires Firestore rules to currently allow writes on entities/*.
+ */
+export async function updateEntityLocation(
+  entityId: string,
+  fields: Partial<Pick<Entity, "cityHotspot" | "district" | "districtHotspot">>,
+): Promise<void> {
+  await setDoc(doc(db, "entities", entityId), fields, { merge: true });
+}
