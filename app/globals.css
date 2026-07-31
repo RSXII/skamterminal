@@ -88,8 +88,15 @@ body {
 }
 
 /* --- hud corner brackets --- */
-.hud-corners {
-  position: relative;
+/* Cascade layers, not specificity, decide this: plain unlayered CSS always
+   beats Tailwind's utility layer no matter the selector, so this has to live
+   in @layer components (lower precedence than utilities) or it would
+   permanently pin position:relative over an explicit absolute/fixed utility
+   on the same element. */
+@layer components {
+  .hud-corners {
+    position: relative;
+  }
 }
 .hud-corners::before,
 .hud-corners::after {

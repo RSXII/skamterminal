@@ -184,6 +184,7 @@ export function Desktop({ user, role, onLogout }: { user: string; role: Role; on
         apps={APPS}
         focusedId={focusedId}
         onTaskClick={taskClick}
+        onOpenApp={openApp}
         onLogout={onLogout}
       />
     </div>
