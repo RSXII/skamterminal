@@ -2,10 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { fetchEntities, updateDistrictBoundary } from "@/lib/entities";
-import type { Entity, MapPoint } from "@/lib/types";
+import { fetchListings, placeListingOnMap } from "@/lib/data";
+import type { Entity, Listing, MapPoint } from "@/lib/types";
 import { Rich } from "@/components/entity/Rich";
 import { DossierPanel } from "@/components/entity/DossierPanel";
 import { useSession } from "@/lib/session";
+import { useNavigation, useAppFocus, type AppFocus } from "@/lib/navigation";
 
 const CITY_ENTITY_ID = "city-overview";
 // The whole city is one shared vector canvas — every hotspot/boundary point
@@ -83,6 +85,33 @@ function activeTilesFor(
   return QUADRANTS.filter((q) => minX < q.x + q.w && maxX > q.x && minY < q.y + q.h && maxY > q.y).map((q) => q.key);
 }
 
+/** Presents a Listing through the same DossierPanel used for every other map pin — see AGENTS notes in the plan. */
+function listingToDossierEntity(l: Listing): Entity {
+  return {
+    id: l.id,
+    kind: "location",
+    fileNo: `GKR-${l.id.slice(0, 4).toUpperCase()}`,
+    stamp: !l.available ? "LET AGREED" : l.kind === "apartment" ? "FOR LET" : "FOR SALE",
+    colors: { rule: "#e8a33d", accent: "#ffd58a", stripe: "#57401d", stampColor: "#e8a33d" },
+    name: l.title,
+    epithet: l.address,
+    images: [],
+    stats: [
+      { label: "Type", value: l.kind === "house" ? "House" : "Apartment" },
+      {
+        label: "Price",
+        value: l.kind === "apartment" ? `${l.price.toLocaleString("en-US")} gl/mo` : `${l.price.toLocaleString("en-US")} gl`,
+      },
+      { label: "Bedrooms", value: l.beds === 0 ? "Studio" : String(l.beds) },
+      { label: "Baths", value: String(l.baths) },
+      { label: "Area", value: `${l.sqft.toLocaleString()} sqft` },
+      { label: "Status", value: l.available ? "Available" : "Let Agreed" },
+    ],
+    sections: [{ heading: "Description", paragraphs: [l.description] }],
+    quote: null,
+  };
+}
+
 interface Focus {
   point: { x: number; y: number }; // absolute map units
   baseScale: number;
@@ -92,7 +121,10 @@ const CITY_FOCUS: Focus = { point: CENTER, baseScale: 1 };
 
 export function MapApp() {
   const { role } = useSession();
+  const { navigate } = useNavigation();
+  const [incomingFocus, consumeIncomingFocus] = useAppFocus<Extract<AppFocus, { app: "map" }>>("map");
   const [entities, setEntities] = useState<Entity[]>([]);
+  const [listings, setListings] = useState<Listing[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [districtId, setDistrictId] = useState<string | null>(null);
   const [locationId, setLocationId] = useState<string | null>(null);
@@ -132,9 +164,10 @@ export function MapApp() {
   const gRef = useRef<SVGGElement>(null);
 
   useEffect(() => {
-    fetchEntities()
-      .then((list) => {
-        setEntities(list);
+    Promise.all([fetchEntities(), fetchListings()])
+      .then(([entityList, listingList]) => {
+        setEntities(entityList);
+        setListings(listingList);
         setStatus("ready");
       })
       .catch((err) => {
@@ -163,9 +196,26 @@ export function MapApp() {
   const districts = useMemo(() => entities.filter((e) => e.kind === "district"), [entities]);
   const locations = useMemo(() => entities.filter((e) => e.kind === "location"), [entities]);
   const selectedDistrict = districts.find((d) => d.id === districtId) ?? null;
-  const districtLocations = locations.filter((l) => l.district === districtId);
+  const districtLocations = useMemo(() => locations.filter((l) => l.district === districtId), [locations, districtId]);
+  const districtListings = useMemo(
+    () => listings.filter((l) => l.districtId === districtId && l.districtHotspot),
+    [listings, districtId]
+  );
+  // Unified for pin rendering / zoom-to lookups — a listing pin behaves exactly like any other
+  // location pin once placed, it just also carries a Gilded Key listing behind it.
+  const districtPins = useMemo(
+    () => [
+      ...districtLocations.filter((l) => l.districtHotspot).map((l) => ({ id: l.id, hotspot: l.districtHotspot! })),
+      ...districtListings.map((l) => ({ id: l.id, hotspot: l.districtHotspot! })),
+    ],
+    [districtLocations, districtListings]
+  );
+  const unplacedListings = districtId
+    ? listings.filter((l) => !l.districtHotspot && (!l.districtId || l.districtId === districtId))
+    : [];
   const selectedLocation = locations.find((l) => l.id === locationId) ?? null;
-  const sheetOpen = !!selectedLocation;
+  const selectedListing = listings.find((l) => l.id === locationId) ?? null;
+  const sheetOpen = !!selectedLocation || !!selectedListing;
 
   const goCity = useCallback(() => {
     setDistrictId(null);
@@ -208,14 +258,36 @@ export function MapApp() {
         if (districtId) focusDistrict(districtId);
         return;
       }
-      const l = districtLocations.find((x) => x.id === id);
+      const pin = districtPins.find((p) => p.id === id);
       setLocationId(id);
       setZoomMultiplier(1);
-      if (l?.districtHotspot) {
-        setFocus((f) => ({ point: abs(l.districtHotspot!), baseScale: f.baseScale * LOCATION_ZOOM_BOOST }));
+      if (pin) {
+        setFocus((f) => ({ point: abs(pin.hotspot), baseScale: f.baseScale * LOCATION_ZOOM_BOOST }));
       }
     },
-    [locationId, districtId, districtLocations, focusDistrict]
+    [locationId, districtId, districtPins, focusDistrict]
+  );
+
+  /** Cross-app deep link landing: drill into a pin's district and zoom to it, whether it's a real Entity location or a Gilded Key listing. */
+  const goToLocation = useCallback(
+    (id: string) => {
+      const loc = locations.find((l) => l.id === id);
+      const listing = listings.find((l) => l.id === id);
+      const targetDistrictId = loc?.district ?? listing?.districtId;
+      const hotspot = loc?.districtHotspot ?? listing?.districtHotspot;
+      if (!targetDistrictId || !hotspot) return;
+      const d = districts.find((x) => x.id === targetDistrictId);
+      if (!d) return;
+      setEditMode(false);
+      setTarget("");
+      setHoveredLocationId(null);
+      setDistrictId(d.id);
+      setZoomMultiplier(1);
+      const baseScale = d.boundary && d.boundary.length >= 3 ? fitScaleFor(polygonBBox(d.boundary)) : 3;
+      setFocus({ point: abs(hotspot), baseScale: baseScale * LOCATION_ZOOM_BOOST });
+      setLocationId(id);
+    },
+    [locations, listings, districts]
   );
 
   const totalScale = focus.baseScale * zoomMultiplier;
@@ -282,6 +354,12 @@ export function MapApp() {
     // Same reasoning as the ResizeObserver effect above: the <svg> doesn't exist until status
     // flips to "ready", so an empty dep array would attach to nothing.
   }, [status]);
+
+  useEffect(() => {
+    if (!incomingFocus || status !== "ready") return;
+    goToLocation(incomingFocus.locationId);
+    consumeIncomingFocus();
+  }, [incomingFocus, status, goToLocation, consumeIncomingFocus]);
 
   const startEditingBoundary = useCallback((d: Entity) => {
     setEditingBoundaryId(d.id);
@@ -478,21 +556,39 @@ export function MapApp() {
                   <span className="text-[9px] tracking-[0.1em] text-gold-faint uppercase">{d.fileNo}</span>
                 </button>
               ))
-            : districtLocations.length > 0
-              ? districtLocations.map((l) => (
-                  <button
-                    key={l.id}
-                    onClick={() => selectLocation(l.id)}
-                    onMouseEnter={() => setHoveredLocationId(l.id)}
-                    onMouseLeave={() => setHoveredLocationId((cur) => (cur === l.id ? null : cur))}
-                    className={`border-b border-line/50 px-3 py-2.5 text-left text-xs transition-colors ${
-                      locationId === l.id ? "bg-panel-2 text-gold" : "text-gold-dim hover:bg-panel hover:text-gold"
-                    }`}
-                  >
-                    <Rich html={l.name} className="block truncate font-semibold" />
-                    <span className="text-[9px] tracking-[0.1em] text-gold-faint uppercase">{l.fileNo}</span>
-                  </button>
-                ))
+            : districtLocations.length > 0 || districtListings.length > 0
+              ? (
+                  <>
+                    {districtLocations.map((l) => (
+                      <button
+                        key={l.id}
+                        onClick={() => selectLocation(l.id)}
+                        onMouseEnter={() => setHoveredLocationId(l.id)}
+                        onMouseLeave={() => setHoveredLocationId((cur) => (cur === l.id ? null : cur))}
+                        className={`border-b border-line/50 px-3 py-2.5 text-left text-xs transition-colors ${
+                          locationId === l.id ? "bg-panel-2 text-gold" : "text-gold-dim hover:bg-panel hover:text-gold"
+                        }`}
+                      >
+                        <Rich html={l.name} className="block truncate font-semibold" />
+                        <span className="text-[9px] tracking-[0.1em] text-gold-faint uppercase">{l.fileNo}</span>
+                      </button>
+                    ))}
+                    {districtListings.map((l) => (
+                      <button
+                        key={l.id}
+                        onClick={() => selectLocation(l.id)}
+                        onMouseEnter={() => setHoveredLocationId(l.id)}
+                        onMouseLeave={() => setHoveredLocationId((cur) => (cur === l.id ? null : cur))}
+                        className={`border-b border-line/50 px-3 py-2.5 text-left text-xs transition-colors ${
+                          locationId === l.id ? "bg-panel-2 text-gold" : "text-gold-dim hover:bg-panel hover:text-gold"
+                        }`}
+                      >
+                        <span className="block truncate font-semibold">{l.title}</span>
+                        <span className="text-[9px] tracking-[0.1em] text-gold-faint uppercase">Gilded Key Listing</span>
+                      </button>
+                    ))}
+                  </>
+                )
               : status === "ready" && (
                   <div className="p-3 text-[10px] leading-relaxed tracking-[0.15em] text-gold-faint">
                     NO KNOWN LOCATIONS ON RECORD
@@ -518,7 +614,19 @@ export function MapApp() {
                     if (!editMode || !target || editingBoundaryId) return;
                     const pct = screenToPct(e.clientX, e.clientY);
                     if (!pct) return;
-                    setPlaced((prev) => ({ ...prev, [target]: pct }));
+                    if (target.startsWith("listing:")) {
+                      // Live, immediate write — this is localStorage, not the write-locked
+                      // Firestore entities collection, so there's no migration-script dance.
+                      const id = target.slice("listing:".length);
+                      if (districtId) {
+                        void placeListingOnMap(id, districtId, pct).then((updated) => {
+                          setListings((prev) => prev.map((l) => (l.id === id ? updated : l)));
+                        });
+                      }
+                    } else {
+                      const id = target.startsWith("entity:") ? target.slice("entity:".length) : target;
+                      setPlaced((prev) => ({ ...prev, [id]: pct }));
+                    }
                     setTarget("");
                   }}
                   onPointerDown={handleMapPointerDown}
@@ -673,14 +781,13 @@ export function MapApp() {
                       })}
 
                     {districtId &&
-                      districtLocations.map((l) => {
-                        if (!l.districtHotspot) return null;
-                        const p = abs(l.districtHotspot);
-                        const active = l.id === locationId;
+                      districtPins.map(({ id, hotspot }) => {
+                        const p = abs(hotspot);
+                        const active = id === locationId;
                         const r = PIN_BASE_R / totalScale;
                         return (
                           <circle
-                            key={l.id}
+                            key={id}
                             cx={p.x}
                             cy={p.y}
                             r={r}
@@ -699,7 +806,7 @@ export function MapApp() {
                                 suppressNextClickRef.current = false;
                                 return;
                               }
-                              selectLocation(l.id);
+                              selectLocation(id);
                             }}
                           />
                         );
@@ -714,9 +821,9 @@ export function MapApp() {
                     })}
 
                     {hoveredLocationId &&
-                      districtLocations.find((l) => l.id === hoveredLocationId)?.districtHotspot &&
+                      districtPins.find((p) => p.id === hoveredLocationId) &&
                       (() => {
-                        const p = abs(districtLocations.find((l) => l.id === hoveredLocationId)!.districtHotspot!);
+                        const p = abs(districtPins.find((pin) => pin.id === hoveredLocationId)!.hotspot);
                         const r = (PIN_BASE_R * 1.8) / totalScale;
                         return (
                           <circle
@@ -768,10 +875,10 @@ export function MapApp() {
                     sheetOpen ? "h-[60%]" : "h-0"
                   }`}
                 >
-                  {selectedLocation && (
+                  {(selectedLocation || selectedListing) && (
                     <div className="relative h-full overflow-y-auto">
                       <button
-                        onClick={() => selectLocation(selectedLocation.id)}
+                        onClick={() => selectLocation(locationId!)}
                         className="absolute top-2 right-2 z-10 flex h-6 w-6 items-center justify-center border border-line text-gold-dim hover:border-gold hover:text-gold"
                         aria-label="Close"
                       >
@@ -779,7 +886,24 @@ export function MapApp() {
                           <path d="M2 2 l6 6 M8 2 l-6 6" />
                         </svg>
                       </button>
-                      <DossierPanel entity={selectedLocation} />
+                      {selectedLocation ? (
+                        <DossierPanel entity={selectedLocation} />
+                      ) : (
+                        selectedListing && (
+                          <DossierPanel
+                            entity={listingToDossierEntity(selectedListing)}
+                            showNotes={false}
+                            after={
+                              <button
+                                onClick={() => navigate({ app: "estates", listingId: selectedListing.id })}
+                                className="fc-btn mt-4 text-xs"
+                              >
+                                Open in Gilded Key
+                              </button>
+                            }
+                          />
+                        )
+                      )}
                     </div>
                   )}
                 </div>
@@ -819,12 +943,19 @@ export function MapApp() {
                     >
                       <option value="">— pick an unplaced entity —</option>
                       {unplaced.map((e) => (
-                        <option key={e.id} value={e.id}>
+                        <option key={e.id} value={`entity:${e.id}`}>
                           {e.id}
                         </option>
                       ))}
+                      {unplacedListings.map((l) => (
+                        <option key={l.id} value={`listing:${l.id}`}>
+                          🏠 {l.title}
+                        </option>
+                      ))}
                     </select>
-                    {unplaced.length === 0 && <span className="text-gold-faint">everything here is already placed</span>}
+                    {unplaced.length === 0 && unplacedListings.length === 0 && (
+                      <span className="text-gold-faint">everything here is already placed</span>
+                    )}
                     <span className="ml-auto text-gold-faint">or click an existing district outline to edit its shape</span>
                   </div>
                   {Object.keys(placed).length > 0 && (
