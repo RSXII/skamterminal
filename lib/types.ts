@@ -62,7 +62,7 @@ export interface Entity {
   sections: EntitySection[];
   quote: EntityQuote | null;
 
-  // ── Map fields (districts + locations only) ──────────────────────────────
+  // ── Map fields (districts, locations, people + orgs) ─────────────────────
   // The city map is one continuous vector canvas — every point below is a
   // percentage of that same shared viewBox, not of a separate cropped image.
   // Districts zoom the canvas in rather than swapping to a different map.
@@ -78,10 +78,26 @@ export interface Entity {
   boundary?: MapPoint[];
   /** Districts only: fallback point (e.g. polygon centroid) for districts without a boundary yet. */
   cityHotspot?: MapPoint;
-  /** Locations only: id of the parent district entity. */
+  /**
+   * Locations: id of the parent district entity.
+   * People/organizations: id of the district their home/HQ sits in — unset until placed.
+   */
   district?: string;
-  /** Locations only: where this location's pin sits on the shared city canvas. */
+  /**
+   * Locations: where this location's pin sits on the shared city canvas.
+   * People/organizations: where their home (person) or HQ (organization) pin sits — this is
+   * a fixed residence/headquarters, not a live-tracked position.
+   */
   districtHotspot?: MapPoint;
+  /**
+   * People/organizations only: whether this home/HQ pin is known to players yet. Mirrors the
+   * `visibility: "private"` treatment of stats/sections — omitted or false means players must
+   * first discover where someone lives/operates before the terminal will show it on the map,
+   * so `toPublicView()` strips `district`/`districtHotspot` for everyone (including the "admin"
+   * role — see lib/auth.ts, it's cosmetic here, not a security boundary) until this is true.
+   * Set it via the entities migration data, the same out-of-band path as private content.
+   */
+  locationRevealed?: boolean;
 }
 
 export type ListingKind = "house" | "apartment";

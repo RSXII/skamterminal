@@ -6,6 +6,7 @@ import type { Entity, EntityKind } from "@/lib/types";
 import { Rich } from "@/components/entity/Rich";
 import { Portrait } from "@/components/entity/Portrait";
 import { DossierPanel } from "@/components/entity/DossierPanel";
+import { useNavigation, useAppFocus, type AppFocus } from "@/lib/navigation";
 
 const KIND_LABELS: Record<EntityKind, string> = {
   briefing: "Briefing",
@@ -17,6 +18,8 @@ const KIND_LABELS: Record<EntityKind, string> = {
 const KIND_ORDER: EntityKind[] = ["briefing", "person", "organization"];
 
 export function PeopleApp() {
+  const { navigate } = useNavigation();
+  const [focus, consumeFocus] = useAppFocus<Extract<AppFocus, { app: "profiles" }>>("profiles");
   const [entities, setEntities] = useState<Entity[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -39,6 +42,12 @@ export function PeopleApp() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!focus) return;
+    setSelectedId(focus.entityId);
+    consumeFocus();
+  }, [focus, consumeFocus]);
 
   const people = entities.filter((e) => KIND_ORDER.includes(e.kind));
   const selected = people.find((e) => e.id === selectedId) ?? null;
@@ -96,7 +105,21 @@ export function PeopleApp() {
 
       {/* dossier */}
       {selected ? (
-        <DossierPanel entity={selected} />
+        <DossierPanel
+          entity={selected}
+          after={
+            (selected.kind === "person" || selected.kind === "organization") &&
+            selected.district &&
+            selected.districtHotspot ? (
+              <button
+                onClick={() => navigate({ app: "map", locationId: selected.id })}
+                className="fc-btn mt-4 text-xs"
+              >
+                Show on Map
+              </button>
+            ) : undefined
+          }
+        />
       ) : (
         <div className="flex flex-1 items-center justify-center text-sm text-gold-faint">
           {status === "loading" ? "Loading Records…" : status === "error" ? "No Connection" : "No Record Available"}
