@@ -4,8 +4,9 @@ import { FormEvent, useEffect, useState } from "react";
 import { SkamSigil } from "@/components/os/icons";
 import { getLastUser, setLastUser } from "@/lib/data";
 import { playChime, playError } from "@/lib/sound";
+import { resolveRole, type Role } from "@/lib/auth";
 
-export function LoginScreen({ onLogin }: { onLogin: (user: string) => void }) {
+export function LoginScreen({ onLogin }: { onLogin: (user: string, role: Role) => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -37,12 +38,12 @@ export function LoginScreen({ onLogin }: { onLogin: (user: string) => void }) {
     }
     setError("");
     setAuthenticating(true);
-    // Placeholder auth: any credentials pass. Swap for a real check later.
+    const role = resolveRole(username, password);
     setTimeout(() => {
       const handle = username.trim().toUpperCase().replace(/\s+/g, "_");
       setLastUser(username.trim());
       playChime();
-      onLogin(handle);
+      onLogin(handle, role);
     }, 1100);
   };
 

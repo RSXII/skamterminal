@@ -137,6 +137,13 @@ async function migrateEntity(npc) {
     stats: (npc.stats ?? []).map((s) => clean({ label: s.label, value: s.value })),
     sections: (npc.sections ?? []).map((s) => migrateSection(s, npc.id)),
     quote: npc.quote ?? null,
+    // Home (person) / HQ (organization) pin — same district + districtHotspot shape as a
+    // location entity, plus locationRevealed to gate it from players until discovered in
+    // fiction (see toPublicView() in lib/entities.ts). All optional: unset until placed via
+    // the Field Map's edit mode (staged JSON) or by hand here in the source NPC data.
+    district: npc.district ?? undefined,
+    districtHotspot: npc.districtHotspot ?? undefined,
+    locationRevealed: npc.locationRevealed ?? undefined,
   });
 }
 

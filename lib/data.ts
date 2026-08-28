@@ -4,11 +4,19 @@
 // can be swapped for Firestore / Realtime Database / Vercel KV later
 // without touching any app component. For now: static data + localStorage.
 
-import { LISTINGS } from "@/data/listings";
-import type { Listing } from "@/lib/types";
+import { listingsStore } from "@/lib/listings-store";
+import type { Listing, MapPoint, NewListingInput } from "@/lib/types";
 
 export async function fetchListings(): Promise<Listing[]> {
-  return LISTINGS;
+  return listingsStore.list();
+}
+
+export async function createListing(input: NewListingInput): Promise<Listing> {
+  return listingsStore.create(input);
+}
+
+export async function placeListingOnMap(id: string, districtId: string, point: MapPoint): Promise<Listing> {
+  return listingsStore.placeOnMap(id, districtId, point);
 }
 
 // --- per-NPC player notes (localStorage) ---

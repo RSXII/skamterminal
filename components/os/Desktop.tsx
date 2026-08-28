@@ -3,14 +3,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { APPS, APP_LIST } from "@/lib/apps";
 import type { WindowState } from "@/lib/types";
+import type { Role } from "@/lib/auth";
+import { SessionProvider } from "@/lib/session";
+import { NavigationProvider, type AppFocus } from "@/lib/navigation";
 import { OSWindow } from "@/components/os/Window";
 import { Taskbar } from "@/components/os/Taskbar";
 import { SkamSigil } from "@/components/os/icons";
 import { subscribeNav } from "@/lib/nav";
 
-export function Desktop({ user, onLogout }: { user: string; onLogout: () => void }) {
+export function Desktop({ user, role, onLogout }: { user: string; role: Role; onLogout: () => void }) {
   const [windows, setWindows] = useState<WindowState[]>([]);
   const [selectedIcon, setSelectedIcon] = useState<string | null>(null);
+  const [pendingFocus, setPendingFocus] = useState<Partial<Record<string, AppFocus>>>({});
   const nextId = useRef(1);
   const nextZ = useRef(10);
 
@@ -50,10 +54,26 @@ export function Desktop({ user, onLogout }: { user: string; onLogout: () => void
     });
   }, []);
 
+  const navigate = useCallback(
+    (focus: AppFocus) => {
+      openApp(focus.app);
+      setPendingFocus((prev) => ({ ...prev, [focus.app]: focus }));
+    },
+    [openApp]
+  );
+
+  const consumeFocus = useCallback((appId: string) => {
+    setPendingFocus((prev) => ({ ...prev, [appId]: undefined }));
+  }, []);
+
   // GM "send location" signal: bring the Map app to front (launching it if
   // it isn't open yet) whenever a new destination comes in. MapApp itself
   // handles the actual focus/travel animation via its own subscription to
   // the same nav/current node — this effect only owns window visibility.
+  // Independent of the in-app navigate()/pendingFocus mechanism above: that
+  // one carries a payload between two already-open-in-this-tab apps, this
+  // one is a cross-client broadcast with no in-tab "sender" to hand a
+  // payload through.
   const lastNavRequestRef = useRef(0);
   useEffect(() => {
     return subscribeNav((signal) => {
@@ -109,6 +129,8 @@ export function Desktop({ user, onLogout }: { user: string; onLogout: () => void
   );
 
   return (
+    <SessionProvider value={{ user, role }}>
+    <NavigationProvider value={{ navigate, pendingFocus, consumeFocus }}>
     <div className="absolute inset-0" onPointerDown={() => setSelectedIcon(null)}>
       {/* wallpaper */}
       <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
@@ -175,6 +197,7 @@ export function Desktop({ user, onLogout }: { user: string; onLogout: () => void
 
       <Taskbar
         user={user}
+        role={role}
         windows={windows}
         apps={APPS}
         focusedId={focusedId}
@@ -182,5 +205,7 @@ export function Desktop({ user, onLogout }: { user: string; onLogout: () => void
         onLogout={onLogout}
       />
     </div>
+    </NavigationProvider>
+    </SessionProvider>
   );
 }

@@ -6,12 +6,14 @@ import { LoginScreen } from "@/components/os/LoginScreen";
 import { Desktop } from "@/components/os/Desktop";
 import { getLastUser } from "@/lib/data";
 import { playClick } from "@/lib/sound";
+import type { Role } from "@/lib/auth";
 
 type Phase = "boot" | "login" | "desktop";
 
 export function FCOS() {
   const [phase, setPhase] = useState<Phase>("boot");
   const [user, setUser] = useState("");
+  const [role, setRole] = useState<Role>("player");
 
   // Global UI click sound: any interactive element anywhere in the OS.
   useEffect(() => {
@@ -30,23 +32,26 @@ export function FCOS() {
     return () => window.removeEventListener("pointerdown", onPointerDown, true);
   }, []);
 
-  // Auth is already just a formality here (LoginScreen accepts any
-  // credentials) — skipping straight to the desktop after boot is what
-  // lets a GM's "send location" signal actually land somewhere instead of
-  // stalling on a form nobody's there to fill in. Anyone who wants to
-  // identify as someone else (or just wants the login ritual) can still
-  // get to LoginScreen the normal way, via Log Out.
+  // Auth is a cosmetic role gate now (see lib/auth.ts) — skipping straight
+  // to the desktop after boot, as a "player", is what lets a GM's "send
+  // location" signal actually land somewhere instead of stalling on a form
+  // nobody's there to fill in. Anyone who wants admin tools (or just wants
+  // the login ritual) can still reach LoginScreen the normal way, via Log
+  // Out, and type the real admin credentials.
   const handleBootComplete = useCallback(() => {
     const saved = getLastUser().trim();
     setUser(saved ? saved.toUpperCase().replace(/\s+/g, "_") : "GUEST-OPERATOR");
+    setRole("player");
     setPhase("desktop");
   }, []);
-  const handleLogin = useCallback((username: string) => {
+  const handleLogin = useCallback((username: string, loginRole: Role) => {
     setUser(username);
+    setRole(loginRole);
     setPhase("desktop");
   }, []);
   const handleLogout = useCallback(() => {
     setUser("");
+    setRole("player");
     setPhase("login");
   }, []);
 
@@ -54,7 +59,7 @@ export function FCOS() {
     <div className="crt fixed inset-0 overflow-hidden bg-ink select-none">
       {phase === "boot" && <BootSequence onComplete={handleBootComplete} />}
       {phase === "login" && <LoginScreen onLogin={handleLogin} />}
-      {phase === "desktop" && <Desktop user={user} onLogout={handleLogout} />}
+      {phase === "desktop" && <Desktop user={user} role={role} onLogout={handleLogout} />}
     </div>
   );
 }
