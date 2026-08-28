@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { BootSequence } from "@/components/os/BootSequence";
 import { LoginScreen } from "@/components/os/LoginScreen";
 import { Desktop } from "@/components/os/Desktop";
+import { getLastUser } from "@/lib/data";
 import { playClick } from "@/lib/sound";
 
 type Phase = "boot" | "login" | "desktop";
@@ -29,7 +30,17 @@ export function FCOS() {
     return () => window.removeEventListener("pointerdown", onPointerDown, true);
   }, []);
 
-  const handleBootComplete = useCallback(() => setPhase("login"), []);
+  // Auth is already just a formality here (LoginScreen accepts any
+  // credentials) — skipping straight to the desktop after boot is what
+  // lets a GM's "send location" signal actually land somewhere instead of
+  // stalling on a form nobody's there to fill in. Anyone who wants to
+  // identify as someone else (or just wants the login ritual) can still
+  // get to LoginScreen the normal way, via Log Out.
+  const handleBootComplete = useCallback(() => {
+    const saved = getLastUser().trim();
+    setUser(saved ? saved.toUpperCase().replace(/\s+/g, "_") : "GUEST-OPERATOR");
+    setPhase("desktop");
+  }, []);
   const handleLogin = useCallback((username: string) => {
     setUser(username);
     setPhase("desktop");

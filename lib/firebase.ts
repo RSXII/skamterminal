@@ -7,6 +7,7 @@
 import { initializeApp, getApps } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
+import { getDatabase } from "firebase/database";
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyA7OmVO18bOequMLYUieWGhVabB4_vTlOs",
@@ -22,3 +23,7 @@ const app = getApps().length ? getApps()[0] : initializeApp(FIREBASE_CONFIG);
 
 export const db = getFirestore(app);
 export const storage = getStorage(app);
+// Realtime Database — same instance the fate-city-1999 "wire" app's
+// firebase-db.js talks to over plain REST. Used here for the tiny
+// GM "send location" nav signal (see lib/nav.ts), nothing else yet.
+export const rtdb = getDatabase(app);

@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { APPS, APP_LIST } from "@/lib/apps";
 import type { WindowState } from "@/lib/types";
 import { OSWindow } from "@/components/os/Window";
 import { Taskbar } from "@/components/os/Taskbar";
 import { SkamSigil } from "@/components/os/icons";
+import { subscribeNav } from "@/lib/nav";
 
 export function Desktop({ user, onLogout }: { user: string; onLogout: () => void }) {
   const [windows, setWindows] = useState<WindowState[]>([]);
@@ -48,6 +49,19 @@ export function Desktop({ user, onLogout }: { user: string; onLogout: () => void
       ];
     });
   }, []);
+
+  // GM "send location" signal: bring the Map app to front (launching it if
+  // it isn't open yet) whenever a new destination comes in. MapApp itself
+  // handles the actual focus/travel animation via its own subscription to
+  // the same nav/current node — this effect only owns window visibility.
+  const lastNavRequestRef = useRef(0);
+  useEffect(() => {
+    return subscribeNav((signal) => {
+      if (!signal || signal.requestedAt === lastNavRequestRef.current) return;
+      lastNavRequestRef.current = signal.requestedAt;
+      openApp("map");
+    });
+  }, [openApp]);
 
   const focusWindow = useCallback((id: number) => {
     setWindows((wins) =>

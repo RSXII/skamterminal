@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { fetchEntities, updateDistrictBoundary } from "@/lib/entities";
-import type { Entity, MapPoint } from "@/lib/types";
+import { subscribeNav } from "@/lib/nav";
+import type { Entity, EntityKind, MapPoint } from "@/lib/types";
 import { Rich } from "@/components/entity/Rich";
 import { DossierPanel } from "@/components/entity/DossierPanel";
 
@@ -41,6 +42,18 @@ interface Focus {
 
 const CITY_FOCUS: Focus = { point: CENTER, baseScale: 1 };
 
+/** Shared by focusDistrict and the GM "send location" nav handler. */
+function computeDistrictFocus(d: Entity): Focus {
+  if (d.boundary && d.boundary.length >= 3) {
+    const bbox = polygonBBox(d.boundary);
+    return { point: { x: (bbox.minX + bbox.maxX) / 2, y: (bbox.minY + bbox.maxY) / 2 }, baseScale: fitScaleFor(bbox) };
+  }
+  if (d.cityHotspot) {
+    return { point: abs(d.cityHotspot), baseScale: 3 };
+  }
+  return CITY_FOCUS;
+}
+
 export function MapApp() {
   const [entities, setEntities] = useState<Entity[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -57,6 +70,10 @@ export function MapApp() {
   const [boundaryDraft, setBoundaryDraft] = useState<MapPoint[] | null>(null);
   const [savingBoundary, setSavingBoundary] = useState(false);
   const draggingVertex = useRef<number | null>(null);
+  const [travelLabel, setTravelLabel] = useState("");
+  const [travelVisible, setTravelVisible] = useState(false);
+  const lastNavRequestRef = useRef(0);
+  const travelTimersRef = useRef<number[]>([]);
 
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -100,18 +117,66 @@ export function MapApp() {
       setEditMode(false);
       setTarget("");
       setZoomMultiplier(1);
-      if (d.boundary && d.boundary.length >= 3) {
-        const bbox = polygonBBox(d.boundary);
-        setFocus({ point: { x: (bbox.minX + bbox.maxX) / 2, y: (bbox.minY + bbox.maxY) / 2 }, baseScale: fitScaleFor(bbox) });
-      } else if (d.cityHotspot) {
-        const p = abs(d.cityHotspot);
-        setFocus({ point: p, baseScale: 3 });
-      } else {
-        setFocus(CITY_FOCUS);
-      }
+      setFocus(computeDistrictFocus(d));
     },
     [districts]
   );
+
+  // GM "send location" target: unlike focusDistrict/selectLocation (which
+  // read districtId/districtLocations state that's only valid for clicks —
+  // one user gesture at a time, always starting from whatever's already on
+  // screen) this resolves everything from scratch off the ids in the
+  // signal, so a location target doesn't need districtId to have already
+  // committed from a prior setDistrictId call in the same tick.
+  const focusEntity = useCallback(
+    (targetId: string, targetKind: EntityKind, parentDistrictId: string) => {
+      if (targetKind === "location") {
+        const d = districts.find((x) => x.id === parentDistrictId);
+        const l = locations.find((x) => x.id === targetId);
+        if (!d || !l) return;
+        setDistrictId(parentDistrictId);
+        setLocationId(targetId);
+        setHoveredDistrictId(null);
+        setHoveredLocationId(null);
+        setEditMode(false);
+        setTarget("");
+        setZoomMultiplier(1);
+        const districtFocus = computeDistrictFocus(d);
+        setFocus(
+          l.districtHotspot
+            ? { point: abs(l.districtHotspot), baseScale: districtFocus.baseScale * LOCATION_ZOOM_BOOST }
+            : districtFocus
+        );
+      } else {
+        focusDistrict(targetId);
+      }
+    },
+    [districts, locations, focusDistrict]
+  );
+
+  // Depends on status/districts/locations so it resubscribes once entities
+  // actually finish loading — if a signal arrives while still "loading",
+  // it's simply not seen yet (lastNavRequestRef hasn't advanced), and the
+  // resubscribe once ready picks up the current value like any other.
+  useEffect(() => {
+    if (status !== "ready") return;
+    const unsubscribe = subscribeNav((signal) => {
+      if (!signal || signal.requestedAt === lastNavRequestRef.current) return;
+      lastNavRequestRef.current = signal.requestedAt;
+      travelTimersRef.current.forEach((id) => window.clearTimeout(id));
+      setTravelLabel(signal.label);
+      setTravelVisible(true);
+      const focusTimer = window.setTimeout(() => {
+        focusEntity(signal.targetId, signal.targetKind, signal.districtId);
+      }, 450);
+      const hideTimer = window.setTimeout(() => setTravelVisible(false), 1150);
+      travelTimersRef.current = [focusTimer, hideTimer];
+    });
+    return () => {
+      unsubscribe();
+      travelTimersRef.current.forEach((id) => window.clearTimeout(id));
+    };
+  }, [status, focusEntity]);
 
   const selectLocation = useCallback(
     (id: string) => {
@@ -502,6 +567,22 @@ export function MapApp() {
                       })()}
                   </g>
                 </svg>
+
+                {/* GM "send location" travel overlay */}
+                <div
+                  className={`pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-[#03070c]/70 transition-opacity duration-300 ${
+                    travelVisible ? "opacity-100" : "opacity-0"
+                  }`}
+                >
+                  <div className="border border-gold-faint bg-panel/95 px-6 py-3 text-center">
+                    <div className="animate-pulse text-[10px] tracking-[0.3em] text-gold-faint uppercase">
+                      Calculating Route
+                    </div>
+                    <div className="mt-1 text-sm tracking-[0.15em] text-gold uppercase">
+                      En Route — {travelLabel}
+                    </div>
+                  </div>
+                </div>
 
                 {/* zoom controls */}
                 <div className="absolute right-3 bottom-3 flex flex-col border border-line bg-panel/90">
