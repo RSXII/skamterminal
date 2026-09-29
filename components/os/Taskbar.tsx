@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { SkamSigil, SpeakerIcon } from "@/components/os/icons";
+import { StartMenu } from "@/components/os/StartMenu";
 import { getVolume, setVolume as setGlobalVolume, playClick } from "@/lib/sound";
 import type { AppDefinition, WindowState } from "@/lib/types";
 import type { Role } from "@/lib/auth";
@@ -13,6 +14,7 @@ interface TaskbarProps {
   apps: Record<string, AppDefinition>;
   focusedId: number | null;
   onTaskClick: (winId: number) => void;
+  onOpenApp: (appId: string) => void;
   onLogout: () => void;
 }
 
@@ -87,18 +89,37 @@ function VolumeControl() {
   );
 }
 
-export function Taskbar({ user, role, windows, apps, focusedId, onTaskClick, onLogout }: TaskbarProps) {
+export function Taskbar({ user, role, windows, apps, focusedId, onTaskClick, onOpenApp, onLogout }: TaskbarProps) {
+  const [startOpen, setStartOpen] = useState(false);
+
   return (
     <div className="absolute inset-x-0 bottom-0 z-[5000] flex h-12 items-center gap-3 border-t border-line bg-ink-2/95 px-3 backdrop-blur">
-      {/* emblem + user */}
-      <div className="flex items-center gap-2.5 border-r border-line pr-3">
-        <SkamSigil className="h-6 w-6" />
-        <div className="leading-tight">
-          <div className="text-[11px] font-bold tracking-[0.3em] text-gold">FCOS</div>
-          <div className="font-[family-name:var(--font-tech)] text-[8px] tracking-[0.1em] text-gold-dim">
-            USER: {user}
+      {/* start button (emblem + user) */}
+      <div className="relative shrink-0 self-stretch border-r border-line">
+        <button
+          onClick={() => setStartOpen((o) => !o)}
+          className={`flex h-full items-center gap-2.5 py-1.5 pr-3 transition-colors ${
+            startOpen ? "text-gold-bright" : "hover:text-gold-bright"
+          }`}
+        >
+          <SkamSigil className="h-6 w-6" />
+          <div className="text-left leading-tight">
+            <div className="text-[11px] font-bold tracking-[0.3em] text-gold">FCOS</div>
+            <div className="font-[family-name:var(--font-tech)] text-[8px] tracking-[0.1em] text-gold-dim">
+              USER: {user}
+            </div>
           </div>
-        </div>
+        </button>
+
+        {startOpen && (
+          <StartMenu
+            user={user}
+            role={role}
+            onOpenApp={onOpenApp}
+            onLogout={onLogout}
+            onClose={() => setStartOpen(false)}
+          />
+        )}
       </div>
 
       {/* running windows */}

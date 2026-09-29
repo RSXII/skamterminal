@@ -9,7 +9,8 @@ import { BrowserApp } from "@/components/apps/BrowserApp";
 import { RealEstateApp } from "@/components/apps/RealEstateApp";
 import { PeopleApp } from "@/components/apps/PeopleApp";
 import { MapApp } from "@/components/apps/MapApp";
-import { BrowserIcon, EstateIcon, PeopleIcon, MapIcon } from "@/components/os/icons";
+import { TrackerApp } from "@/components/apps/TrackerApp";
+import { BrowserIcon, EstateIcon, PeopleIcon, MapIcon, TrackerIcon } from "@/components/os/icons";
 
 export const APP_LIST: AppDefinition[] = [
   {
@@ -39,6 +40,14 @@ export const APP_LIST: AppDefinition[] = [
     icon: MapIcon,
     component: MapApp,
     defaultSize: { w: 920, h: 660 },
+  },
+  {
+    id: "tracker",
+    name: "Case Board",
+    icon: TrackerIcon,
+    component: TrackerApp,
+    defaultSize: { w: 880, h: 620 },
+    minSize: { w: 520, h: 380 },
   },
 ];
 

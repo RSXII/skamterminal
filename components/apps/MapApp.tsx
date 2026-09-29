@@ -387,7 +387,8 @@ export function MapApp() {
         e.id === locationId &&
         (e.kind === "person" || e.kind === "organization"),
     ) ?? null;
-  const sheetOpen = !!selectedLocation || !!selectedListing || !!selectedResident;
+  const sheetOpen =
+    !!selectedLocation || !!selectedListing || !!selectedResident;
 
   const goCity = useCallback(() => {
     setDistrictId(null);
@@ -533,7 +534,9 @@ export function MapApp() {
       const targetDistrictId =
         loc?.district ?? listing?.districtId ?? resident?.district;
       const hotspot =
-        loc?.districtHotspot ?? listing?.districtHotspot ?? resident?.districtHotspot;
+        loc?.districtHotspot ??
+        listing?.districtHotspot ??
+        resident?.districtHotspot;
       if (!targetDistrictId || !hotspot) return;
       const d = districts.find((x) => x.id === targetDistrictId);
       if (!d) return;
@@ -796,7 +799,9 @@ export function MapApp() {
   /** Live write-through for wherever the placement tool just dropped a pin — see updateEntityLocation. */
   async function savePlacement(
     id: string,
-    fields: Partial<Pick<Entity, "cityHotspot" | "district" | "districtHotspot">>,
+    fields: Partial<
+      Pick<Entity, "cityHotspot" | "district" | "districtHotspot">
+    >,
   ) {
     setSavingPlacementId(id);
     try {
@@ -1357,7 +1362,9 @@ export function MapApp() {
                     sheetOpen ? "h-[60%]" : "h-0"
                   }`}
                 >
-                  {(selectedLocation || selectedListing || selectedResident) && (
+                  {(selectedLocation ||
+                    selectedListing ||
+                    selectedResident) && (
                     <div className="relative h-full overflow-y-auto">
                       <button
                         onClick={() => selectLocation(locationId!)}
