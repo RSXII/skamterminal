@@ -133,7 +133,7 @@ export function Desktop({ user, role, onLogout }: { user: string; role: Role; on
     <NavigationProvider value={{ navigate, pendingFocus, consumeFocus }}>
     <div className="absolute inset-0" onPointerDown={() => setSelectedIcon(null)}>
       {/* wallpaper */}
-      <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+      <div className="os-wallpaper pointer-events-none absolute inset-0 flex items-center justify-center">
         <SkamSigil className="h-[55vh] w-[55vh] opacity-[0.05]" />
         <div className="absolute bottom-16 right-8 text-right font-[family-name:var(--font-tech)] text-[10px] leading-relaxed tracking-[0.2em] text-gold-faint">
           FCOS v7.3.1

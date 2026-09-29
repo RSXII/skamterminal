@@ -93,7 +93,7 @@ export function Taskbar({ user, role, windows, apps, focusedId, onTaskClick, onO
   const [startOpen, setStartOpen] = useState(false);
 
   return (
-    <div className="absolute inset-x-0 bottom-0 z-[5000] flex h-12 items-center gap-3 border-t border-line bg-ink-2/95 px-3 backdrop-blur">
+    <div className="os-taskbar absolute inset-x-0 bottom-0 z-[5000] flex h-12 items-center gap-3 border-t border-line bg-ink-2/95 px-3 backdrop-blur">
       {/* start button (emblem + user) */}
       <div className="relative shrink-0 self-stretch border-r border-line">
         <button
@@ -133,7 +133,7 @@ export function Taskbar({ user, role, windows, apps, focusedId, onTaskClick, onO
             <button
               key={w.id}
               onClick={() => onTaskClick(w.id)}
-              className={`flex h-8 items-center gap-2 border px-2.5 text-[10px] font-semibold tracking-[0.15em] uppercase transition-colors ${
+              className={`os-task flex h-8 items-center gap-2 border px-2.5 text-[10px] font-semibold tracking-[0.15em] uppercase transition-colors ${
                 active
                   ? "border-gold-dim bg-panel-2 text-gold glow"
                   : w.minimized

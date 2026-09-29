@@ -94,8 +94,8 @@ export function OSWindow({
 
   return (
     <div
-      className={`window-open absolute flex flex-col border bg-panel/95 backdrop-blur-sm ${
-        focused ? "border-gold-dim panel-glow" : "border-line"
+      className={`window-open os-window absolute flex flex-col border bg-panel/95 backdrop-blur-sm ${
+        focused ? "border-gold-dim panel-glow os-focused" : "border-line"
       }`}
       style={{
         ...style,
@@ -106,7 +106,7 @@ export function OSWindow({
     >
       {/* title bar */}
       <div
-        className={`flex h-8 shrink-0 items-center justify-between border-b px-3 ${
+        className={`os-titlebar flex h-8 shrink-0 items-center justify-between border-b px-3 ${
           win.maximized ? "cursor-default" : "cursor-grab active:cursor-grabbing"
         } ${focused ? "border-line-2 bg-panel-2" : "border-line bg-panel"}`}
         onPointerDown={onTitlePointerDown}
@@ -128,7 +128,7 @@ export function OSWindow({
           <button
             onClick={onMinimize}
             aria-label="Minimize"
-            className="flex h-5 w-6 items-center justify-center border border-line text-gold-dim transition-colors hover:border-gold hover:text-gold-bright"
+            className="os-winbtn flex h-5 w-6 items-center justify-center border border-line text-gold-dim transition-colors hover:border-gold hover:text-gold-bright"
           >
             <svg viewBox="0 0 10 10" className="h-2.5 w-2.5" stroke="currentColor" strokeWidth="1.5">
               <path d="M1 7 h8" />
@@ -137,7 +137,7 @@ export function OSWindow({
           <button
             onClick={onMaximizeToggle}
             aria-label={win.maximized ? "Restore" : "Maximize"}
-            className="flex h-5 w-6 items-center justify-center border border-line text-gold-dim transition-colors hover:border-gold hover:text-gold-bright"
+            className="os-winbtn flex h-5 w-6 items-center justify-center border border-line text-gold-dim transition-colors hover:border-gold hover:text-gold-bright"
           >
             {win.maximized ? (
               <svg viewBox="0 0 10 10" className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -153,7 +153,7 @@ export function OSWindow({
           <button
             onClick={onClose}
             aria-label="Close"
-            className="flex h-5 w-6 items-center justify-center border border-line text-gold-dim transition-colors hover:border-danger hover:text-danger"
+            className="os-winbtn os-winbtn-close flex h-5 w-6 items-center justify-center border border-line text-gold-dim transition-colors hover:border-danger hover:text-danger"
           >
             <svg viewBox="0 0 10 10" className="h-2.5 w-2.5" stroke="currentColor" strokeWidth="1.5">
               <path d="M2 2 l6 6 M8 2 l-6 6" />
