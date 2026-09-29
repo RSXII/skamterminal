@@ -435,3 +435,12 @@ html[data-theme="vga"] input[type="range"].fc-range::-webkit-slider-thumb {
 html[data-theme="vga"] .crt {
   background: transparent;
 }
+
+/* --- pixel cursors (bitmaps + CSS vars are installed by MouseTrail) --- */
+html[data-theme="vga"] {
+  cursor: var(--cursor-arrow), default;
+}
+html[data-theme="vga"]
+  :is(button, a[href], summary, select, [role="button"], input[type="range"], .cursor-pointer):not(:disabled) {
+  cursor: var(--cursor-hand), pointer;
+}

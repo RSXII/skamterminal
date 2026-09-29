@@ -1,5 +1,6 @@
 "use client";
 
+import { MouseTrail } from "@/components/os/MouseTrail";
 import { useCallback, useEffect, useState } from "react";
 import { BootSequence } from "@/components/os/BootSequence";
 import { LoginScreen } from "@/components/os/LoginScreen";
@@ -57,6 +58,7 @@ export function FCOS() {
 
   return (
     <div className="crt fixed inset-0 overflow-hidden bg-ink select-none">
+      <MouseTrail />
       {phase === "boot" && <BootSequence onComplete={handleBootComplete} />}
       {phase === "login" && <LoginScreen onLogin={handleLogin} />}
       {phase === "desktop" && <Desktop user={user} role={role} onLogout={handleLogout} />}
