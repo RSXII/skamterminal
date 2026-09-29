@@ -145,9 +145,19 @@ export interface AppDefinition {
 // Shared, real-time, player-authored — lives in its own Firestore collections
 // (see lib/tracker.ts), separate from the write-locked `entities` collection.
 
-/** A pinned note on the shared evidence board. Position is in board px, not a percentage. */
+/** A named evidence board — players split unrelated threads (e.g. "The Jewel Heist" vs
+ * "Secret Project") into separate boards so each stays uncluttered. */
+export interface TrackerBoard {
+  id: string;
+  name: string;
+  createdBy: string;
+  createdAt: number;
+}
+
+/** A pinned note on a shared evidence board. Position is in board px, not a percentage. */
 export interface EvidenceNote {
   id: string;
+  boardId: string;
   text: string;
   x: number;
   y: number;
@@ -155,9 +165,10 @@ export interface EvidenceNote {
   createdAt: number;
 }
 
-/** A drawn line between two evidence notes. */
+/** A drawn line between two evidence notes on the same board. */
 export interface EvidenceConnection {
   id: string;
+  boardId: string;
   fromId: string;
   toId: string;
   createdBy: string;
