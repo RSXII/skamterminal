@@ -229,3 +229,209 @@ input[type="range"].fc-range::-moz-range-thumb {
 .fc-btn:active {
   transform: translateY(1px);
 }
+
+/* =====================================================================
+   THEME: VGA — 16-color EGA / 256-color VGA era. Beveled chrome, hard
+   pixel shadows, gradient title bars, dithered backdrops. Everything
+   below is scoped to [data-theme="vga"]; removing the attribute (or
+   setting it to anything else) restores the amber terminal look.
+   Token names (gold, line, panel…) are kept so every component
+   re-colors without edits — "gold" now means "primary text/accent".
+   ===================================================================== */
+html[data-theme="vga"] {
+  --color-ink: #0a0a2e;
+  --color-ink-2: #15154a;
+  --color-panel: #1e1a58;
+  --color-panel-2: #2b2478;
+  --color-line: #4a40a8;
+  --color-line-2: #7a6cf0;
+  --color-gold: #4df0ff; /* cyan: primary text */
+  --color-gold-bright: #fff35c; /* yellow: highlights */
+  --color-gold-dim: #c4b5ff; /* lavender: secondary text */
+  --color-gold-faint: #8577d8;
+  --color-danger: #ff4f7b;
+
+  --font-display: var(--font-rajdhani), sans-serif;
+  --font-pixel: var(--font-silkscreen), monospace;
+  --vga-magenta: #ff3fd0;
+  --vga-orange: #ffa030;
+  --vga-green: #5dff8a;
+  --vga-hi: rgba(255, 255, 255, 0.55);
+  --vga-lo: rgba(0, 0, 20, 0.7);
+}
+
+html[data-theme="vga"] body {
+  background-color: var(--color-ink);
+  /* perspective-free synthwave grid over a navy → violet sky */
+  background-image:
+    linear-gradient(rgba(77, 240, 255, 0.10) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(77, 240, 255, 0.10) 1px, transparent 1px),
+    linear-gradient(to bottom, #0a0a2e 0%, #1c1470 55%, #4a1c8c 100%);
+  background-size: 32px 32px, 32px 32px, 100% 100%;
+  color: var(--color-gold);
+}
+html[data-theme="vga"] ::selection {
+  background: var(--vga-magenta);
+  color: #fff;
+}
+html[data-theme="vga"] * {
+  scrollbar-color: var(--color-line-2) var(--color-ink-2);
+}
+html[data-theme="vga"] *::-webkit-scrollbar-thumb {
+  background: var(--color-line-2);
+  border: 1px solid var(--vga-hi);
+  border-right-color: var(--vga-lo);
+  border-bottom-color: var(--vga-lo);
+}
+html[data-theme="vga"] *::-webkit-scrollbar-track {
+  background: var(--color-ink-2);
+}
+
+/* drop the amber CRT vignette, keep faint scanlines */
+html[data-theme="vga"] .crt::before {
+  background: none;
+}
+html[data-theme="vga"] .crt::after {
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0) 0px,
+    rgba(0, 0, 0, 0) 2px,
+    rgba(0, 0, 0, 0.07) 3px
+  );
+}
+
+/* glows become hard pixel shadows */
+html[data-theme="vga"] .glow,
+html[data-theme="vga"] .glow-strong {
+  text-shadow: 2px 2px 0 rgba(0, 0, 20, 0.85);
+}
+html[data-theme="vga"] .panel-glow {
+  box-shadow:
+    inset 1px 1px 0 var(--vga-hi),
+    inset -1px -1px 0 var(--vga-lo),
+    4px 4px 0 rgba(0, 0, 20, 0.6);
+}
+html[data-theme="vga"] .hud-corners::before,
+html[data-theme="vga"] .hud-corners::after {
+  border-color: var(--vga-magenta);
+  width: 10px;
+  height: 10px;
+}
+
+/* --- window chrome --- */
+html[data-theme="vga"] .os-window {
+  background: var(--color-panel);
+  backdrop-filter: none;
+  border: 2px solid #000;
+}
+html[data-theme="vga"] .os-titlebar {
+  border-bottom: 2px solid #000;
+  background: linear-gradient(90deg, #4a40a8, #2e6bd8);
+  font-family: var(--font-pixel);
+}
+html[data-theme="vga"] .os-focused .os-titlebar {
+  background: linear-gradient(90deg, var(--vga-magenta), var(--vga-orange));
+}
+html[data-theme="vga"] .os-titlebar > div:first-child {
+  font-family: var(--font-pixel);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: #fff;
+  text-shadow: 2px 2px 0 rgba(0, 0, 20, 0.7);
+}
+html[data-theme="vga"] .os-winbtn {
+  background: #c9c3ff;
+  color: #1e1a58;
+  border: 2px solid #000;
+  box-shadow: inset 1px 1px 0 #fff, inset -1px -1px 0 #7a6cf0;
+}
+html[data-theme="vga"] .os-winbtn:hover {
+  background: #fff35c;
+  color: #000;
+  border-color: #000;
+}
+html[data-theme="vga"] .os-winbtn:active {
+  box-shadow: inset 1px 1px 0 #7a6cf0, inset -1px -1px 0 #fff;
+}
+html[data-theme="vga"] .os-winbtn-close:hover {
+  background: var(--color-danger);
+  color: #fff;
+  border-color: #000;
+}
+
+/* --- taskbar --- */
+html[data-theme="vga"] .os-taskbar {
+  background: linear-gradient(to bottom, #2b2478, #1e1a58);
+  border-top: 2px solid var(--vga-hi);
+  box-shadow: 0 -2px 0 #000;
+  backdrop-filter: none;
+}
+html[data-theme="vga"] .os-task {
+  background: var(--color-panel);
+  border: 2px solid #000;
+  font-family: var(--font-pixel);
+  box-shadow: inset 1px 1px 0 var(--vga-hi), inset -1px -1px 0 var(--vga-lo);
+}
+html[data-theme="vga"] .os-task.border-gold-dim {
+  background: var(--color-line);
+  box-shadow: inset 1px 1px 0 var(--vga-lo), inset -1px -1px 0 var(--vga-hi);
+  color: var(--color-gold-bright);
+}
+
+/* --- wallpaper: dithered sun-ish sigil, no faint amber ghosting --- */
+html[data-theme="vga"] .os-wallpaper svg {
+  opacity: 0.16;
+  filter: hue-rotate(-30deg) saturate(2);
+}
+
+/* --- inputs & buttons --- */
+html[data-theme="vga"] .fc-input {
+  background: #0a0a2e;
+  border: 2px solid #000;
+  box-shadow: inset 2px 2px 0 rgba(0, 0, 20, 0.8), inset -1px -1px 0 var(--color-line);
+  color: var(--vga-green);
+  border-radius: 0;
+}
+html[data-theme="vga"] .fc-input:focus {
+  border-color: var(--vga-magenta);
+  box-shadow: inset 2px 2px 0 rgba(0, 0, 20, 0.8), 0 0 0 2px var(--vga-magenta);
+}
+html[data-theme="vga"] .fc-btn {
+  font-family: var(--font-pixel);
+  font-size: 12px;
+  color: #1e1a58;
+  background: #c9c3ff;
+  border: 2px solid #000;
+  box-shadow: inset 2px 2px 0 #fff, inset -2px -2px 0 #7a6cf0, 3px 3px 0 rgba(0, 0, 20, 0.6);
+}
+html[data-theme="vga"] .fc-btn:hover {
+  background: var(--vga-orange);
+  color: #000;
+  border-color: #000;
+  box-shadow: inset 2px 2px 0 #ffe0a8, inset -2px -2px 0 #b8600a, 3px 3px 0 rgba(0, 0, 20, 0.6);
+}
+html[data-theme="vga"] .fc-btn:active {
+  transform: translate(2px, 2px);
+  box-shadow: inset 2px 2px 0 #7a6cf0, inset -2px -2px 0 #fff;
+}
+html[data-theme="vga"] input[type="range"].fc-range {
+  height: 6px;
+  border: 2px solid #000;
+  background: linear-gradient(
+    to right,
+    var(--vga-magenta) 0%,
+    var(--vga-orange) var(--fill, 50%),
+    var(--color-ink) var(--fill, 50%),
+    var(--color-ink) 100%
+  );
+}
+html[data-theme="vga"] input[type="range"].fc-range::-webkit-slider-thumb {
+  background: #c9c3ff;
+  clip-path: none;
+  border: 2px solid #000;
+  box-shadow: inset 1px 1px 0 #fff, inset -1px -1px 0 #7a6cf0;
+}
+
+html[data-theme="vga"] .crt {
+  background: transparent;
+}

@@ -5,6 +5,7 @@ import { AccountView } from "@/components/os/AccountView";
 import { initials } from "@/lib/text";
 import { APP_LIST } from "@/lib/apps";
 import type { Role } from "@/lib/auth";
+import { getTheme, setTheme, type Theme } from "@/lib/theme";
 
 export function StartMenu({
   user,
@@ -20,6 +21,12 @@ export function StartMenu({
   onClose: () => void;
 }) {
   const [accountOpen, setAccountOpen] = useState(false);
+  const [theme, setThemeState] = useState<Theme>(() => getTheme());
+  const toggleTheme = () => {
+    const next: Theme = theme === "vga" ? "amber" : "vga";
+    setTheme(next);
+    setThemeState(next);
+  };
 
   return (
     <>
@@ -65,6 +72,17 @@ export function StartMenu({
             );
           })}
         </div>
+
+        {/* theme */}
+        <button
+          onClick={toggleTheme}
+          className="flex items-center justify-between border-t border-line px-4 py-3 text-left text-gold-dim transition-colors hover:bg-panel-2/70 hover:text-gold"
+        >
+          <span className="text-[10px] font-semibold tracking-[0.2em] uppercase">Theme</span>
+          <span className="font-[family-name:var(--font-tech)] text-[10px] tracking-[0.15em] text-gold">
+            {theme === "vga" ? "VGA ▸ AMBER" : "AMBER ▸ VGA"}
+          </span>
+        </button>
 
         {/* footer */}
         <button
