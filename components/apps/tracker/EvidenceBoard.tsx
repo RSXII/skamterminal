@@ -6,9 +6,14 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { useSession } from "@/lib/session";
+import { useNavigation } from "@/lib/navigation";
+import { fetchEntities } from "@/lib/entities";
+import { plainText } from "@/lib/text";
+import { detectMention, parseReferences, referenceTargetApp, searchEntities } from "@/lib/references";
 import {
   createConnection,
   createNote,
@@ -19,7 +24,7 @@ import {
   updateNotePosition,
   updateNoteText,
 } from "@/lib/tracker";
-import type { EvidenceConnection, EvidenceNote } from "@/lib/types";
+import type { Entity, EvidenceConnection, EvidenceNote } from "@/lib/types";
 
 const BOARD_W = 3000;
 const BOARD_H = 2000;
@@ -51,7 +56,11 @@ interface CardData {
 
 export function EvidenceBoard() {
   const { user } = useSession();
+  const { navigate } = useNavigation();
   const [notes, setNotes] = useState<EvidenceNote[]>([]);
+  // Persons/orgs/districts/locations from the shared entities collection — for resolving and
+  // autocompleting "#id" references in note text. Read-only here, fetched once.
+  const [entities, setEntities] = useState<Entity[]>([]);
   const [connections, setConnections] = useState<EvidenceConnection[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [draft, setDraft] = useState<{ x: number; y: number; text: string } | null>(null);
@@ -68,6 +77,9 @@ export function EvidenceBoard() {
   // Each card's real rendered height, keyed by id — cards size to their content, so connection
   // lines and drag bounds need to know how tall a card actually is, not a fixed constant.
   const [cardHeights, setCardHeights] = useState<Record<string, number>>({});
+  // The in-progress "#query" mention (if any) in whichever card is currently being edited.
+  const [mention, setMention] = useState<{ cardId: string; start: number; query: string } | null>(null);
+  const [mentionHighlight, setMentionHighlight] = useState(0);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const dragState = useRef<{
@@ -79,6 +91,7 @@ export function EvidenceBoard() {
   } | null>(null);
   const cardElsRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const textareaElsRef = useRef<Map<string, HTMLTextAreaElement>>(new Map());
 
   useEffect(() => {
     const ro = new ResizeObserver((entries) => {
@@ -117,6 +130,58 @@ export function EvidenceBoard() {
     },
     [],
   );
+
+  const setTextareaRef = useCallback(
+    (id: string) => (el: HTMLTextAreaElement | null) => {
+      if (el) {
+        textareaElsRef.current.set(id, el);
+        autosizeTextarea(el);
+      } else {
+        textareaElsRef.current.delete(id);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    fetchEntities()
+      .then(setEntities)
+      .catch((err) => console.error("Failed to load entities for references:", err));
+  }, []);
+
+  /** Re-derives the active "#query" mention from wherever the caret currently sits — called on
+   * every keystroke and on plain caret moves (click, arrow keys), since those don't fire onChange. */
+  function syncMention(cardId: string, el: HTMLTextAreaElement) {
+    const detected = detectMention(el.value, el.selectionStart ?? el.value.length);
+    setMention(detected ? { cardId, ...detected } : null);
+    setMentionHighlight(0);
+  }
+
+  function insertMention(card: CardData, entity: Entity) {
+    if (!mention || mention.cardId !== card.id) return;
+    const isDraft = card.id === DRAFT_ID;
+    const current = isDraft ? draft?.text ?? "" : editText;
+    const before = current.slice(0, mention.start);
+    const after = current.slice(mention.start + 1 + mention.query.length);
+    const inserted = `#${entity.id} `;
+    const next = before + inserted + after;
+    if (isDraft) setDraft((d) => (d ? { ...d, text: next } : d));
+    else setEditText(next);
+    setMention(null);
+    const caret = before.length + inserted.length;
+    requestAnimationFrame(() => {
+      const el = textareaElsRef.current.get(card.id);
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(caret, caret);
+      autosizeTextarea(el);
+    });
+  }
+
+  function openEntity(entity: Entity) {
+    if (referenceTargetApp(entity) === "map") navigate({ app: "map", locationId: entity.id });
+    else navigate({ app: "profiles", entityId: entity.id });
+  }
 
   useEffect(() => {
     setStatus("loading");
@@ -425,6 +490,25 @@ export function EvidenceBoard() {
             const isEditing = isDraft || card.id === editingId;
             const isConnectSource = connectFromId === card.id;
             const text = isDraft ? draft?.text ?? "" : isEditing ? editText : card.text;
+            const mentionMatches =
+              mention && mention.cardId === card.id ? searchEntities(entities, mention.query) : [];
+
+            function handleTextareaKeyDown(e: ReactKeyboardEvent<HTMLTextAreaElement>) {
+              if (mentionMatches.length === 0) return;
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setMentionHighlight((h) => (h + 1) % mentionMatches.length);
+              } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setMentionHighlight((h) => (h - 1 + mentionMatches.length) % mentionMatches.length);
+              } else if (e.key === "Enter" || e.key === "Tab") {
+                e.preventDefault();
+                insertMention(card, mentionMatches[mentionHighlight] ?? mentionMatches[0]);
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setMention(null);
+              }
+            }
 
             return (
               <div
@@ -495,28 +579,82 @@ export function EvidenceBoard() {
 
                 {/* body */}
                 {isEditing ? (
-                  <textarea
-                    autoFocus
-                    ref={autosizeTextarea}
-                    value={text}
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onChange={(e) => {
-                      autosizeTextarea(e.target);
-                      const v = e.target.value;
-                      if (isDraft) setDraft((d) => (d ? { ...d, text: v } : d));
-                      else setEditText(v);
-                    }}
-                    placeholder="Type your note…"
-                    spellCheck={false}
-                    rows={1}
-                    className="min-h-8 resize-none overflow-hidden bg-transparent px-2 py-1.5 text-[11px] leading-snug text-gold-bright outline-none placeholder:text-gold-faint"
-                  />
+                  <>
+                    <textarea
+                      autoFocus
+                      ref={setTextareaRef(card.id)}
+                      value={text}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onChange={(e) => {
+                        autosizeTextarea(e.target);
+                        const v = e.target.value;
+                        if (isDraft) setDraft((d) => (d ? { ...d, text: v } : d));
+                        else setEditText(v);
+                        syncMention(card.id, e.target);
+                      }}
+                      onClick={(e) => syncMention(card.id, e.currentTarget)}
+                      onKeyUp={(e) => {
+                        if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
+                          syncMention(card.id, e.currentTarget);
+                        }
+                      }}
+                      onKeyDown={handleTextareaKeyDown}
+                      onBlur={() => mention?.cardId === card.id && setMention(null)}
+                      placeholder="Type your note… use # to reference evidence"
+                      spellCheck={false}
+                      rows={1}
+                      className="min-h-8 resize-none overflow-hidden bg-transparent px-2 py-1.5 text-[11px] leading-snug text-gold-bright outline-none placeholder:text-gold-faint"
+                    />
+                    {mentionMatches.length > 0 && (
+                      <div className="absolute top-full left-0 z-20 mt-1 w-full border border-line-2 bg-panel shadow-[0_4px_16px_rgba(0,0,0,0.6)]">
+                        {mentionMatches.map((entity, i) => (
+                          <button
+                            key={entity.id}
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              insertMention(card, entity);
+                            }}
+                            className={`flex w-full flex-col items-start px-2 py-1 text-left ${
+                              i === mentionHighlight ? "bg-panel-2 text-gold" : "text-gold-dim hover:bg-panel-2"
+                            }`}
+                          >
+                            <span className="truncate text-[10px] font-semibold">{plainText(entity.name)}</span>
+                            <span className="text-[9px] tracking-[0.1em] text-gold-faint uppercase">
+                              {entity.kind} · {entity.fileNo}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <div
                     onClick={() => !connectMode && !deleteMode && startEdit(card)}
                     className="min-h-8 px-2 py-1.5 text-[11px] leading-snug whitespace-pre-wrap break-words text-gold-dim"
                   >
-                    {card.text}
+                    {parseReferences(card.text, entities).map((seg, i) =>
+                      seg.kind === "text" ? (
+                        <span key={i}>{seg.value}</span>
+                      ) : connectMode || deleteMode ? (
+                        <span
+                          key={i}
+                          className="mx-0.5 inline-flex items-center border border-gold-dim/60 bg-gold/10 px-1 py-0.5 text-[10px] font-semibold text-gold"
+                        >
+                          {plainText(seg.entity.name)}
+                        </span>
+                      ) : (
+                        <button
+                          key={i}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openEntity(seg.entity);
+                          }}
+                          className="mx-0.5 inline-flex cursor-pointer items-center border border-gold-dim/60 bg-gold/10 px-1 py-0.5 text-[10px] font-semibold text-gold hover:border-gold hover:bg-gold/20"
+                        >
+                          {plainText(seg.entity.name)}
+                        </button>
+                      ),
+                    )}
                   </div>
                 )}
               </div>
