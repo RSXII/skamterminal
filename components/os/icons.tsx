@@ -67,6 +67,18 @@ export function MapIcon({ className = "" }: { className?: string }) {
   );
 }
 
+export function TrackerIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.5" className={className} aria-hidden>
+      <rect x="4" y="4" width="24" height="24" />
+      <circle cx="10" cy="10" r="1.8" fill="currentColor" stroke="none" />
+      <circle cx="23" cy="12" r="1.8" fill="currentColor" stroke="none" />
+      <circle cx="14" cy="23" r="1.8" fill="currentColor" stroke="none" />
+      <path d="M10 10 L23 12 M10 10 L14 23" opacity="0.6" />
+    </svg>
+  );
+}
+
 export function SpeakerIcon({
   className = "",
   muted = false,

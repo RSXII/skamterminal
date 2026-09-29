@@ -141,6 +141,38 @@ export interface AppDefinition {
   minSize?: { w: number; h: number };
 }
 
+// ── Case tracker (evidence board + task list) ────────────────────────────
+// Shared, real-time, player-authored — lives in its own Firestore collections
+// (see lib/tracker.ts), separate from the write-locked `entities` collection.
+
+/** A pinned note on the shared evidence board. Position is in board px, not a percentage. */
+export interface EvidenceNote {
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  createdBy: string;
+  createdAt: number;
+}
+
+/** A drawn line between two evidence notes. */
+export interface EvidenceConnection {
+  id: string;
+  fromId: string;
+  toId: string;
+  createdBy: string;
+  createdAt: number;
+}
+
+/** A shared to-do item. `votes` holds the usernames who've thumbed it up (max 2 per player, enforced client-side). */
+export interface TrackerTask {
+  id: string;
+  text: string;
+  createdBy: string;
+  createdAt: number;
+  votes: string[];
+}
+
 export interface WindowState {
   id: number;
   appId: string;
